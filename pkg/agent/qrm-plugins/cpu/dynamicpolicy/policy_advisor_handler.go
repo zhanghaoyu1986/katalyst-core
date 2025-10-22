@@ -598,7 +598,7 @@ func (p *DynamicPolicy) checkAndApplyAllPodsQuota(calculationInfo *advisorsvc.Ca
 	for _, podDir := range podDirs {
 		pod, podRelativePath, err := p.getPodAndRelativePath(calculationInfo.CgroupPath, podDir, podsPathMap)
 		if err != nil {
-			general.Warningf("getPodAndRelativePath error for pod %s: %v", pod.Name, err)
+			general.Warningf("getPodAndRelativePath error for pod dir %s: %v", podDir, err)
 			continue
 		}
 
@@ -759,9 +759,6 @@ func (p *DynamicPolicy) applyAllContainersQuota(pod *v1.Pod, setToLimit bool) er
 				return fmt.Errorf("ApplyCPUWithRelativePath %s to %v failed with error: %v", relativePath, realQuota, err)
 			}
 		} else {
-			if containerCpu.CpuQuota < 0 {
-				continue
-			}
 			err := p.applyAllSubCgroupQuotaToUnLimit(relativePath)
 			if err != nil {
 				return fmt.Errorf("applyAllSubCgroupQuotaToUnLimit %s failed with error: %v", relativePath, err)
@@ -1185,7 +1182,7 @@ func (p *DynamicPolicy) applyBlocks(blockCPUSet advisorapi.BlockCPUSet, resp *ad
 	}
 
 	// use pod entries generated above to generate machine state info, and store in local state
-	newMachineState, err := generateMachineStateFromPodEntries(p.machineInfo.CPUTopology, newEntries)
+	newMachineState, err := generateMachineStateFromPodEntries(p.machineInfo.CPUTopology, newEntries, p.state.GetMachineState())
 	if err != nil {
 		return fmt.Errorf("calculate machineState by newPodEntries failed with error: %v", err)
 	}

@@ -161,7 +161,7 @@ func (p *DynamicPolicy) setExtraControlKnobByConfigs(_ *coreconfig.Configuration
 	}
 
 	var resourcesMachineState state.NUMANodeResourcesMap
-	resourcesMachineState, err = state.GenerateMachineStateFromPodEntries(p.state.GetMachineInfo(), podResourceEntries, p.state.GetReservedMemory())
+	resourcesMachineState, err = state.GenerateMachineStateFromPodEntries(p.state.GetMachineInfo(), podResourceEntries, p.state.GetMachineState(), p.state.GetReservedMemory())
 	if err != nil {
 		general.Errorf("GenerateMachineStateFromPodEntries failed with error: %v", err)
 		return
@@ -322,8 +322,14 @@ func (p *DynamicPolicy) checkMemorySet(_ *coreconfig.Configuration,
 				general.Errorf("get container id of pod: %s container: %s failed with error: %v", podUID, containerName, err)
 				continue
 			}
+			cpusetAbsCGPath, err := common.GetContainerAbsCgroupPath(common.CgroupSubsysCPUSet, podUID, containerID)
+			if err != nil {
+				general.Errorf("get container abs cgroup path of pod: %s container: %s failed with error: %v", podUID, containerName, err)
+				_ = p.emitter.StoreInt64(util.MetricNameCgroupPathNotFound, 1, metrics.MetricTypeNameRaw, tags...)
+				continue
+			}
 
-			cpusetStats, err = cgroupmgr.GetCPUSetForContainer(podUID, containerID)
+			cpusetStats, err = cgroupmgr.GetCPUSetWithAbsolutePath(cpusetAbsCGPath)
 			if err != nil {
 				general.Errorf("GetMemorySet of pod: %s container: name(%s), id(%s) failed with error: %v",
 					podUID, containerName, containerID, err)
@@ -486,7 +492,7 @@ func (p *DynamicPolicy) clearResidualState(_ *coreconfig.Configuration,
 			}
 		}
 
-		resourcesMachineState, err := state.GenerateMachineStateFromPodEntries(p.state.GetMachineInfo(), podResourceEntries, p.state.GetReservedMemory())
+		resourcesMachineState, err := state.GenerateMachineStateFromPodEntries(p.state.GetMachineInfo(), podResourceEntries, p.state.GetMachineState(), p.state.GetReservedMemory())
 		if err != nil {
 			general.Errorf("GenerateMachineStateFromPodEntries failed with error: %v", err)
 			return
@@ -811,7 +817,7 @@ func (p *DynamicPolicy) syncOOMPriority(conf *coreconfig.Configuration,
 	}
 
 	var resourcesMachineState state.NUMANodeResourcesMap
-	resourcesMachineState, err = state.GenerateMachineStateFromPodEntries(p.state.GetMachineInfo(), podResourceEntries, p.state.GetReservedMemory())
+	resourcesMachineState, err = state.GenerateMachineStateFromPodEntries(p.state.GetMachineInfo(), podResourceEntries, p.state.GetMachineState(), p.state.GetReservedMemory())
 	if err != nil {
 		general.Errorf("GenerateMachineStateFromPodEntries failed with error: %v", err)
 		return
