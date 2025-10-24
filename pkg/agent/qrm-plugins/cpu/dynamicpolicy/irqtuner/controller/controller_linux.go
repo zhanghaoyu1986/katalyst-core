@@ -2736,7 +2736,7 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityQualifiedCores(nic *NicInfo, i
 				IrqTuningLogPrefix, irq, targetCore, nic, err)
 			continue
 		}
-		general.Infof("%s nic %s set irq %d affinity cpu %d", IrqTuningLogPrefix, nic, irq, targetCore)
+		general.Infof("%s nic %s set irq %d affinity from cpu %d to cpu %d ", IrqTuningLogPrefix, nic, irq, core, targetCore)
 
 		// sriov nic's irqs are accounted in getCoresIrqCount, so here need to dec irq count from orignal core.
 		if _, ok := accountedIrqs[irq]; ok {
@@ -2755,6 +2755,12 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityQualifiedCores(nic *NicInfo, i
 			general.Errorf("%s failed to sync for nic %s, err %s", IrqTuningLogPrefix, nic, err)
 		}
 
+		totalIrqs := nic.getIrqs()
+		general.Infof("%s after sync, nic %s irq affinity (irq -> cpu):", IrqTuningLogPrefix, nic)
+		for _, irq := range totalIrqs {
+			general.Infof("%s   %d -> %d", IrqTuningLogPrefix, irq, nic.Irq2Core[irq])
+		}
+
 		if ic.isNormalThroughputNic(nic) {
 			var tunedReason string
 
@@ -2769,6 +2775,16 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityQualifiedCores(nic *NicInfo, i
 					tunedReason = irqtuner.NormalNicsChanged
 				} else {
 					tunedReason = irqtuner.UnexpectedTuning
+
+					general.Infof("%s %s last tuned nics:", IrqTuningLogPrefix, nic)
+					for _, n := range nics {
+						general.Infof("%s   %s queueNum: %d", IrqTuningLogPrefix, n, n.QueueNum)
+					}
+					general.Infof("%s current nics:", IrqTuningLogPrefix)
+					for _, n := range currentNics {
+						general.Infof("%s   %s queueNum: %d", IrqTuningLogPrefix, n, n.QueueNum)
+					}
+
 					general.Errorf("%s nic %s unexpected balance-fair irq tuning, irqs: %+v, qualifiedCores: %+v",
 						IrqTuningLogPrefix, nic, irqs, qualifiedCoresMap)
 				}
