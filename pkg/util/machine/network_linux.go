@@ -1470,7 +1470,12 @@ func GetNetDevRxPackets(nic *NicBasicInfo) (uint64, error) {
 	}
 	rxPacket, ok := netDevs[nic.Name]
 	if !ok {
-		return 0, fmt.Errorf("failed to find %s in %s", nic.Name, NetDevProcFile)
+		b, err := os.ReadFile("/proc/net/dev")
+		if err != nil {
+			general.Errorf("irq-tuning: failed to ReadFile(/proc/net/dev), err %s", err)
+		}
+
+		return 0, fmt.Errorf("failed to find %s in %s, /proc/net/dev raw content %s", nic.Name, NetDevProcFile, string(b))
 	}
 
 	return rxPacket.RxPackets, nil
