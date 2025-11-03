@@ -1018,7 +1018,31 @@ func (n *NicInfo) filterIrqCores(coresList []int64) []int64 {
 	return filteredIrqCores
 }
 
-func (n *NicInfo) sync() error {
+func (n *NicInfo) updateIrqAffinity(changedIrq2Core map[int]int64) error {
+	if len(changedIrq2Core) == 0 {
+		return nil
+	}
+
+	for irq, core := range changedIrq2Core {
+		n.Irq2Core[irq] = core
+	}
+
+	socketIrqCores, err := getSocketIrqCores(n.Irq2Core)
+	if err != nil {
+		return fmt.Errorf("nic %s failed to getSocketIrqCores, err %s", n, err)
+	}
+	n.SocketIrqCores = socketIrqCores
+
+	irqs := n.getIrqs()
+	general.Infof("%s after updateIrqAffinity, nic %s irq affinity (irq -> cpu):", IrqTuningLogPrefix, n)
+	for _, irq := range irqs {
+		general.Infof("%s   %d -> %d", IrqTuningLogPrefix, irq, n.Irq2Core[irq])
+	}
+
+	return nil
+}
+
+func (n *NicInfo) syncIrqAffinityFromKernel() error {
 	nicInfo, err := GetNicInfo(n.NicBasicInfo)
 	if err != nil {
 		return fmt.Errorf("failed to GetNicInfo for nic %s, err %v", n, err)
@@ -1629,9 +1653,11 @@ func (ic *IrqTuningController) getAllNics() []*NicIrqTuningManager {
 	return nics
 }
 
-func (ic *IrqTuningController) emitErrMetric(reason string, level int64) {
+func (ic *IrqTuningController) emitErrMetric(reason string, level int64, tags ...metrics.MetricTag) {
+	allTags := []metrics.MetricTag{{Key: "reason", Val: reason}}
+	allTags = append(allTags, tags...)
 	_ = ic.emitter.StoreInt64(metricUtil.MetricNameIrqTuningErr, level, metrics.MetricTypeNameRaw,
-		metrics.MetricTag{Key: "reason", Val: reason})
+		allTags...)
 }
 
 func (ic *IrqTuningController) emitIrqTuningPolicy() {
@@ -2171,6 +2197,35 @@ func (ic *IrqTuningController) syncNics() error {
 
 	if !nicsChanged {
 		general.Infof("%s no nic changed", IrqTuningLogPrefix)
+
+		for _, nic := range oldNics {
+			oldIrq2Core := nic.NicInfo.Irq2Core
+			if err := nic.NicInfo.syncIrqAffinityFromKernel(); err != nil {
+				general.Errorf("%s nic %s failed to syncIrqAffinityFromKernel, err %s", IrqTuningLogPrefix, nic.NicInfo, err)
+
+				ic.emitErrMetric(irqtuner.SyncIrqAffinityFromKernelFailed, irqtuner.IrqTuningError,
+					metrics.MetricTag{Key: "nic", Val: nic.NicInfo.UniqName()})
+			}
+
+			for irq, oldCore := range oldIrq2Core {
+				newCore := nic.NicInfo.Irq2Core[irq]
+				if newCore != oldCore {
+					throughputClass := "normal"
+					if ic.isLowThroughputNic(nic.NicInfo) {
+						throughputClass = "low"
+					}
+
+					general.Errorf("%s %s throughput nic %s irq %d expectly affinity cpu %d, but actually affinity cpu %d",
+						IrqTuningLogPrefix, throughputClass, nic.NicInfo, irq, oldCore, newCore)
+
+					_ = ic.emitter.StoreInt64(metricUtil.MetricNameIrqTuningIrqAffintityInconsistent, 1, metrics.MetricTypeNameRaw,
+						metrics.MetricTag{Key: "nic", Val: nic.NicInfo.UniqName()},
+						metrics.MetricTag{Key: "irq", Val: strconv.Itoa(irq)},
+						metrics.MetricTag{Key: "throughput", Val: throughputClass})
+				}
+			}
+		}
+
 		return nil
 	}
 
@@ -2686,8 +2741,6 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityQualifiedCores(nic *NicInfo, i
 		accountedIrqs[irq] = struct{}{}
 	}
 
-	hasIrqTuned := false
-
 	isSriovContainerNic := ic.isSriovContainerNic(nic)
 	if isSriovContainerNic {
 		// sriov nic's irqs are accounted in getCoresIrqCount
@@ -2696,6 +2749,7 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityQualifiedCores(nic *NicInfo, i
 		}
 	}
 
+	changedIrq2Core := make(map[int]int64)
 	for _, irq := range irqs {
 		core, ok := nic.Irq2Core[irq]
 		if !ok {
@@ -2748,21 +2802,19 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityQualifiedCores(nic *NicInfo, i
 		}
 		coresIrqCount[targetCore]++
 		accountedIrqs[irq] = struct{}{}
-		hasIrqTuned = true
+		changedIrq2Core[irq] = targetCore
 	}
 
 	///////////////////////////////////////////////
 	// update nic.Irq2Core and nic.SocketIrqCores
 	///////////////////////////////////////////////
-	if hasIrqTuned {
-		if err := nic.sync(); err != nil {
-			general.Errorf("%s failed to sync for nic %s, err %s", IrqTuningLogPrefix, nic, err)
-		}
+	if len(changedIrq2Core) > 0 {
+		if err := nic.updateIrqAffinity(changedIrq2Core); err != nil {
+			general.Errorf("%s failed to updateIrqAffinity(%+v) for nic %s, err %v",
+				IrqTuningLogPrefix, changedIrq2Core, nic, err)
 
-		totalIrqs := nic.getIrqs()
-		general.Infof("%s after sync, nic %s irq affinity (irq -> cpu):", IrqTuningLogPrefix, nic)
-		for _, irq := range totalIrqs {
-			general.Infof("%s   %d -> %d", IrqTuningLogPrefix, irq, nic.Irq2Core[irq])
+			ic.emitErrMetric(irqtuner.UpdateIrqAffinityFailed, irqtuner.IrqTuningError,
+				metrics.MetricTag{Key: "nic", Val: nic.UniqName()})
 		}
 
 		if ic.isNormalThroughputNic(nic) {
@@ -3022,13 +3074,26 @@ func (ic *IrqTuningController) balanceNicIrqsInCoresFairly(nic *NicInfo, irqs []
 			general.Errorf("%s nic %s failed to SetIrqAffinity(%d, %d), err %v", IrqTuningLogPrefix, nic, irq, targetCore, err)
 			continue
 		}
-		general.Infof("%s nic %s set irq %d affinity cpu %d", IrqTuningLogPrefix, nic, irq, targetCore)
+		general.Infof("%s nic %s set irq %d affinity from cpu %d to cpu %d ", IrqTuningLogPrefix, nic, irq, oriCore, targetCore)
 
 		coresIrqCount[oriCore]--
 		coresIrqCount[targetCore]++
 
 		// changedIrq2Core is used to update nic.Irq2Core and nic.SocketIrqCores
 		changedIrq2Core[irq] = targetCore
+	}
+
+	if len(changedIrq2Core) > 0 {
+		if err := nic.updateIrqAffinity(changedIrq2Core); err != nil {
+			general.Errorf("%s failed to updateIrqAffinity(%+v) for nic %s, err %v",
+				IrqTuningLogPrefix, changedIrq2Core, nic, err)
+
+			ic.emitErrMetric(irqtuner.UpdateIrqAffinityFailed, irqtuner.IrqTuningError,
+				metrics.MetricTag{Key: "nic", Val: nic.UniqName()})
+		}
+
+		// clear changedIrq2Core
+		changedIrq2Core = make(map[int]int64)
 	}
 
 	// make sure no qualified core's irq count less-than round down avg core irq count.
@@ -3104,7 +3169,7 @@ func (ic *IrqTuningController) balanceNicIrqsInCoresFairly(nic *NicInfo, irqs []
 			general.Errorf("%s failed to SetIrqAffinity(%d, %d), err %v", IrqTuningLogPrefix, targetIrq, core, err)
 			continue
 		}
-		general.Infof("%s nic %s set irq %d affinity cpu %d", IrqTuningLogPrefix, nic, targetIrq, core)
+		general.Infof("%s nic %s set irq %d affinity from cpu %d to cpu %d ", IrqTuningLogPrefix, nic, targetIrq, srcCore, core)
 
 		coresIrqCount[srcCore]--
 		coresIrqCount[core]++
@@ -3113,25 +3178,14 @@ func (ic *IrqTuningController) balanceNicIrqsInCoresFairly(nic *NicInfo, irqs []
 		changedIrq2Core[targetIrq] = core
 	}
 
-	if len(changedIrq2Core) == 0 {
-		return nil
-	}
+	if len(changedIrq2Core) >= 0 {
+		if err := nic.updateIrqAffinity(changedIrq2Core); err != nil {
+			general.Errorf("%s failed to updateIrqAffinity(%+v) for nic %s, err %v",
+				IrqTuningLogPrefix, changedIrq2Core, nic, err)
 
-	// update nic.Irq2Core and nic.SocketIrqCores, just in case nic.sync failed
-	for irq, core := range changedIrq2Core {
-		nic.Irq2Core[irq] = core
-	}
-
-	socketIrqCores, err := getSocketIrqCores(nic.Irq2Core)
-	if err != nil {
-		general.Errorf("%s nic %s failed to getSocketIrqCores, err %s", IrqTuningLogPrefix, nic, err)
-	} else {
-		nic.SocketIrqCores = socketIrqCores
-	}
-
-	// update nic info
-	if err := nic.sync(); err != nil {
-		general.Errorf("%s failed to sync nic %s, err %v", IrqTuningLogPrefix, nic, err)
+			ic.emitErrMetric(irqtuner.UpdateIrqAffinityFailed, irqtuner.IrqTuningError,
+				metrics.MetricTag{Key: "nic", Val: nic.UniqName()})
+		}
 	}
 
 	return nil
@@ -4174,24 +4228,30 @@ func (ic *IrqTuningController) balanceIrqs(nic *NicIrqTuningManager, srcIrqCore 
 		return nil, nil
 	}
 
+	changedIrq2Core := make(map[int]int64)
 	irqsAffinityTuning := make(map[int]*IrqAffinityTuning)
 	for _, irq := range irqs {
 		if err := machine.SetIrqAffinity(irq, destIrqCore.CpuID); err != nil {
 			general.Errorf("%s nic %s failed to SetIrqAffinity(%d, %d), err %v", IrqTuningLogPrefix, nic.NicInfo, irq, destIrqCore.CpuID, err)
 			continue
 		}
-		general.Infof("%s nic %s set irq %d affinity cpu %d", IrqTuningLogPrefix, nic.NicInfo, irq, destIrqCore.CpuID)
+		general.Infof("%s nic %s set irq %d affinity from cpu %d to cpu %d", IrqTuningLogPrefix, nic.NicInfo, irq, srcIrqCore.CpuID, destIrqCore.CpuID)
 
-		nic.NicInfo.Irq2Core[irq] = destIrqCore.CpuID
+		changedIrq2Core[irq] = destIrqCore.CpuID
 		irqsAffinityTuning[irq] = &IrqAffinityTuning{
 			SourceCore: srcIrqCore.CpuID,
 			DestCore:   destIrqCore.CpuID,
 		}
-		general.Infof("%s nic %s tuning irq %d affinity from cpu %d to cpu %d", IrqTuningLogPrefix, nic.NicInfo, irq, srcIrqCore.CpuID, destIrqCore.CpuID)
 	}
 
-	if err := nic.NicInfo.sync(); err != nil {
-		general.Errorf("%s failed to sync for nic %s, err %s", IrqTuningLogPrefix, nic.NicInfo, err)
+	if len(changedIrq2Core) > 0 {
+		if err := nic.NicInfo.updateIrqAffinity(changedIrq2Core); err != nil {
+			general.Errorf("%s failed to updateIrqAffinity(%+v) for nic %s, err %v",
+				IrqTuningLogPrefix, changedIrq2Core, nic.NicInfo, err)
+
+			ic.emitErrMetric(irqtuner.UpdateIrqAffinityFailed, irqtuner.IrqTuningError,
+				metrics.MetricTag{Key: "nic", Val: nic.NicInfo.UniqName()})
+		}
 	}
 
 	return irqsAffinityTuning, nil
@@ -4609,6 +4669,7 @@ func (ic *IrqTuningController) balanceIrqsToOtherExclusiveIrqCores(nic *NicIrqTu
 		cpusPPSBuffer[cpu] = uint64(ppsBuffer)
 	}
 
+	changedIrq2Core := make(map[int]int64)
 	for _, queuePPS := range srcCoresQueuesPPSInDecOrder {
 		irq, ok := nic.NicInfo.Queue2Irq[queuePPS.QueueID]
 		if !ok {
@@ -4633,13 +4694,20 @@ func (ic *IrqTuningController) balanceIrqsToOtherExclusiveIrqCores(nic *NicIrqTu
 			general.Errorf("%s nic %s failed to SetIrqAffinity(%d, %d), err %v", IrqTuningLogPrefix, nic.NicInfo, irq, maxPPSBufferCore, err)
 			continue
 		}
-		general.Infof("%s nic %s set irq %d affinity cpu %d", IrqTuningLogPrefix, nic.NicInfo, irq, maxPPSBufferCore)
+		general.Infof("%s nic %s set irq %d affinity from cpu %d to cpu %d", IrqTuningLogPrefix, nic.NicInfo, irq, nic.NicInfo.Irq2Core[irq], maxPPSBufferCore)
 
 		cpusPPSBuffer[maxPPSBufferCore] = maxPSSBuffer - queuePPS.PPS
+		changedIrq2Core[irq] = maxPPSBufferCore
 	}
 
-	if err := nic.NicInfo.sync(); err != nil {
-		general.Errorf("%s failed to sync for nic %s, err %s", IrqTuningLogPrefix, nic.NicInfo, err)
+	if len(changedIrq2Core) > 0 {
+		if err := nic.NicInfo.updateIrqAffinity(changedIrq2Core); err != nil {
+			general.Errorf("%s failed to updateIrqAffinity(%+v) for nic %s, err %v",
+				IrqTuningLogPrefix, changedIrq2Core, nic.NicInfo, err)
+
+			ic.emitErrMetric(irqtuner.UpdateIrqAffinityFailed, irqtuner.IrqTuningError,
+				metrics.MetricTag{Key: "nic", Val: nic.NicInfo.UniqName()})
+		}
 	}
 
 	return nil
