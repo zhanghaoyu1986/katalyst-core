@@ -5302,9 +5302,7 @@ func (ic *IrqTuningController) clearRPSForNic(nic *NicIrqTuningManager) error {
 		return err
 	}
 
-	queues := nic.NicInfo.getQueues()
-
-	for _, queue := range queues {
+	for queue := 0; queue < nic.NicInfo.QueueNum; queue++ {
 		oldQueueRPSConf, ok := oldNicRPSConf[queue]
 		if ok {
 			if machine.IsZeroBitmap(oldQueueRPSConf) {
@@ -5740,6 +5738,42 @@ func (ic *IrqTuningController) syncDynamicConfig() {
 	}
 }
 
+func (ic *IrqTuningController) clearNicXPS(nic *NicInfo) error {
+	oldNicXPSConf, err := machine.GetNicTxQueuesXpsConf(nic.NicBasicInfo)
+	if err != nil {
+		return err
+	}
+
+	for queue := 0; queue < nic.QueueNum; queue++ {
+		oldQueueXPSConf, ok := oldNicXPSConf[queue]
+		if ok {
+			if machine.IsZeroBitmap(oldQueueXPSConf) {
+				continue
+			}
+		}
+
+		if err := machine.ClearNicTxQueueXPS(nic.NicBasicInfo, queue); err != nil {
+			general.Errorf("%s failed to ClearNicTxQueueXPS for nic %s, queue: %d, err %s", IrqTuningLogPrefix, nic, queue, err)
+		}
+		general.Infof("%s nic %s clear queue %d xps", IrqTuningLogPrefix, nic, queue)
+	}
+
+	return nil
+}
+
+func (ic *IrqTuningController) tuneNicsXPS() {
+	if ic.conf.DisableXPS {
+		// only clear xps for normal throughput nics
+		for _, nic := range ic.Nics {
+			if err := ic.clearNicXPS(nic.NicInfo); err != nil {
+				general.Errorf("%s failed to clearNicXPS for nic %s, err %s", IrqTuningLogPrefix, nic.NicInfo, err)
+				ic.emitErrMetric(irqtuner.ClearNicXPSFailed, irqtuner.IrqTuningError,
+					metrics.MetricTag{Key: "nic", Val: nic.NicInfo.UniqName()})
+			}
+		}
+	}
+}
+
 func (ic *IrqTuningController) periodicTuning() {
 	if (len(ic.Nics) == 0 && len(ic.LowThroughputNics) == 0) || time.Since(ic.LastNicSyncTime).Seconds() >= float64(ic.NicSyncInterval) {
 		if err := ic.syncNics(); err != nil {
@@ -5768,6 +5802,9 @@ func (ic *IrqTuningController) periodicTuning() {
 	default:
 		ic.periodicTuningIrqBalanceFair()
 	}
+
+	// regardless of the IrqTuningPolicy, XPS tuning must be performed.
+	ic.tuneNicsXPS()
 
 	ic.emitIrqTuningPolicy()
 	ic.emitNicsIrqAffinityPolicy()
