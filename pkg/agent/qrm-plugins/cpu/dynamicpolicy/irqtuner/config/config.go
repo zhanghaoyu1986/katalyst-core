@@ -559,7 +559,9 @@ func ConvertDynamicConfigToIrqTuningConfig(dynamicConf *dynconfig.Configuration)
 		if dynamicConf.RPSExcludeIRQCoresThreshold != nil {
 			conf.RPSExcludeIrqCoresThreshold.RPSCoresVSIrqCoresRatio = dynamicConf.RPSExcludeIRQCoresThreshold.RPSCoresVSIRQCoresRatio
 		}
-		conf.DisableXPS = dynamicConf.IRQTuningConfiguration.DisableXPS
+
+		//conf.DisableXPS = dynamicConf.IRQTuningConfiguration.DisableXPS
+		conf.DisableXPS = true
 
 		switch dynamicConf.IRQTuningConfiguration.NICAffinityPolicy {
 		case v1alpha1.NICAffinityPolicyPhysicalTopo:
