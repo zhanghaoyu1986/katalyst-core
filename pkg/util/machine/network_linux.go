@@ -32,6 +32,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/moby/sys/mountinfo"
@@ -1083,6 +1084,8 @@ func netnsEnter(netnsInfo NetNSInfo) (*netnsSwitchContext, error) {
 		}
 	}()
 
+	id := time.Now().Nanosecond()
+
 	originalNetNSHdl, err = netns.Get()
 	if err != nil {
 		return nil, fmt.Errorf("failed to netns.Get, err %v", err)
@@ -1139,16 +1142,18 @@ func netnsEnter(netnsInfo NetNSInfo) (*netnsSwitchContext, error) {
 	if mounted {
 		netSysDir := filepath.Join(TmpNetNSSysDir, ClassNetBasePath)
 		if _, statErr := os.Stat(netSysDir); statErr == nil {
-			klog.Warningf("sysfs already mounted at %s, maybe leaked", TmpNetNSSysDir)
+			klog.Warningf("irq-tuning: [%d] sysfs already mounted at %s, maybe leaked", id, TmpNetNSSysDir)
 		} else {
-			klog.Warningf("failed to stat %s, err %v", netSysDir, statErr)
+			klog.Warningf("irq-tuning: [%d] failed to stat %s, err %v", id, netSysDir, statErr)
 			err = fmt.Errorf("other fs has mounted at %s", TmpNetNSSysDir)
 			return nil, err
 		}
 	} else {
 		if err = syscall.Mount("sysfs", TmpNetNSSysDir, "sysfs", 0, ""); err != nil {
+			klog.Infof("irq-tuning: [%d] failed to mount sysfs at %s", id, TmpNetNSSysDir)
 			return nil, fmt.Errorf("failed to mount sysfs at %s, err %v", TmpNetNSSysDir, err)
 		}
+		klog.Infof("irq-tuning: [%d] succeed to mount sysfs at %s", id, TmpNetNSSysDir)
 	}
 
 	return &netnsSwitchContext{
@@ -1158,6 +1163,7 @@ func netnsEnter(netnsInfo NetNSInfo) (*netnsSwitchContext, error) {
 		sysMountDir:      TmpNetNSSysDir,
 		sysDirRemounted:  true,
 		locked:           true,
+		id:               id,
 	}, nil
 }
 
@@ -1179,8 +1185,23 @@ func (nsc *netnsSwitchContext) netnsExit() {
 	// umount tmp sysfs in the new netns
 	if nsc.sysDirRemounted && nsc.sysMountDir != "" {
 		if err := syscall.Unmount(nsc.sysMountDir, 0); err != nil {
-			klog.Fatalf("failed to Unmount(%s), err %v", nsc.sysMountDir, err)
+			mounted, err := mountinfo.Mounted(TmpNetNSSysDir)
+			if err != nil {
+				klog.Errorf("irq-tuning: [%d] check mounted dir: %s failed with error: %v", nsc.id, TmpNetNSSysDir, err)
+			} else {
+				if mounted {
+					klog.Errorf("irq-tuning: [%d] %s still mounted", nsc.id, TmpNetNSSysDir)
+				} else {
+					klog.Errorf("irq-tuning: [%d] %s has been umounted", nsc.id, TmpNetNSSysDir)
+				}
+			}
+
+			klog.Fatalf("irq-tuning: [%d] failed to Unmount(%s), err %v", nsc.id, nsc.sysMountDir, err)
 		}
+
+		klog.Infof("irq-tuning: [%d] succeed to umount sysfs at %s", nsc.id, TmpNetNSSysDir)
+	} else {
+		klog.Errorf("irq-tuning: [%d] needless to umount sysfs at %s, impossible", nsc.id, TmpNetNSSysDir)
 	}
 
 	nsc.newNetNSHdl.Close()
