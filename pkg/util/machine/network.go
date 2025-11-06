@@ -164,6 +164,7 @@ type netnsSwitchContext struct {
 	sysMountDir      string
 	sysDirRemounted  bool
 	locked           bool
+	id               int
 }
 
 type SoftNetStat struct {
