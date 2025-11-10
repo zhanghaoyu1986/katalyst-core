@@ -5816,6 +5816,22 @@ func (ic *IrqTuningController) periodicTuning() {
 func (ic *IrqTuningController) Run(stopCh <-chan struct{}) {
 	general.Infof("%s Irq tuning controller run", IrqTuningLogPrefix)
 
+	// When irq-tuning starts running, KCC local may not have synchronized with
+	// the center yet. As a result, irq-tuning will retrieve stale
+	// configurations, which could lead to unexpected impacts. Once KCC local
+	// successfully completes synchronization from the center, irq-tuning will
+	//fetch the latest configuration and resume normal behavior.
+	//
+	// Wait a minute for KCC local’s synchronization from the center to finish
+	// — this is a workaround to prevent irq-tuning from retrieving stale
+	// configurations. A final resolution will later be implemented in KCC
+	// local, adding a flag to indicate whether the current configuration is
+	//synchronized from the center.
+	//
+	// N.B. This workaround may impact the dynamic irq-cores exclusive policy
+	// by delaying the tuning of exclusive irq-cores for one minute.
+	time.Sleep(time.Minute)
+
 	controllerRuningLock.Lock()
 	defer controllerRuningLock.Unlock()
 
