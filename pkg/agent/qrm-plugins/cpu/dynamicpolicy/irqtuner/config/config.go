@@ -52,6 +52,15 @@ const (
 	NicPhysicalTopoBindNuma NicAffinitySocketsPolicy = "physical-topo-bind"
 )
 
+type ExclusiveIrqCoresAllocPolicy string
+
+const (
+	// exclusive irq cores number is static configured
+	Static ExclusiveIrqCoresAllocPolicy = "static"
+	// exclusive irq cores is dynamic tuned according to irq load
+	Dynamic ExclusiveIrqCoresAllocPolicy = "dynamic"
+)
+
 // RPSExcludeIrqCoresThreshold determines if excluding irq-cores in rx queue's rps_cpus,
 // if rps qualified cores count versus irq cores count of rps qualified cores is greater-equal RPSCoresVSIrqCoresRatio,
 // then rps_cpus excludes irq cores.
@@ -161,6 +170,39 @@ type IrqCoresExclusionConfig struct {
 	SuccessiveSwitchInterval float64 // interval of successive enable/disable irq cores exclusion MUST >= SuccessiveSwitchInterval
 }
 
+type DynamicIrqCoresExclusive struct {
+	IrqCoresExpectedCpuUtil int
+	IrqCoresAdjustConf      IrqCoresAdjustConfig
+	IrqCoresExclusionConf   IrqCoresExclusionConfig
+}
+
+type StaticIrqCoresExclusive struct {
+	// The Nics value is formatted as strings like "eth0,ns2/eth2", where multiple NICs are separated by commas,
+	// for a Nic string containing a "/", the part before the slash represents the netns, and the part after denotes the Nic name,
+	// for a Nic string without a "/", the Nic is considered to be in the host netns,
+	// if the Nics value is empty, all active uplink Nics in the host will have static irq-cores-exclusive enabled.
+	Nics string
+	// sum of irq cores of all enabled static irq-cores-excluive nics
+	// if IrqCoresCount > 0 then use IrqCoresCount
+	// 0.05 <= IrqCoresCount/TotalCores <= 0.5
+	IrqCoresCount int
+	// sum of irq cores of all enabled static irq-cores-excluive nics
+	// if IrqCoresCount == 0 then use IrqCoresRatio
+	// 0.05 <= IrqCoresRatio <= 0.5
+	IrqCoresRatio        float64
+	EnableIrqLoadBalance bool // default false
+}
+
+type IrqCoresExclusiveConfig struct {
+	ExclusiveIrqCoresAllocPolicy ExclusiveIrqCoresAllocPolicy
+	DynamicIrqCoresExclusive
+	StaticIrqCoresExclusive
+	IrqLoadBalanceConf          IrqLoadBalanceConfig
+	IrqCoreNetOverLoadThreshold IrqCoreNetOverloadThresholds
+	ReniceIrqCoresKsoftirqd     bool
+	IrqCoresKsoftirqdNice       int
+}
+
 // IrqTuningConfig is the configuration for irq-tuning
 type IrqTuningConfig struct {
 	Interval                    int
@@ -171,14 +213,8 @@ type IrqTuningConfig struct {
 	RPSExcludeIrqCoresThreshold RPSExcludeIrqCoresThreshold // threshold of excluding irq cores in rx queue's rps_cpus
 	DisableXPS                  bool                        // disable xps according to machine specification
 	NicAffinitySocketsPolicy    NicAffinitySocketsPolicy    // nics's irqs affinity sockets policy
-	IrqCoresExpectedCpuUtil     int
 	ThroughputClassSwitchConf   ThroughputClassSwitchConfig
-	ReniceIrqCoresKsoftirqd     bool
-	IrqCoresKsoftirqdNice       int
-	IrqCoreNetOverLoadThreshold IrqCoreNetOverloadThresholds
-	IrqLoadBalanceConf          IrqLoadBalanceConfig
-	IrqCoresAdjustConf          IrqCoresAdjustConfig
-	IrqCoresExclusionConf       IrqCoresExclusionConfig
+	IrqCoresExclusiveConfig
 }
 
 func NewConfiguration() *IrqTuningConfig {
@@ -193,7 +229,6 @@ func NewConfiguration() *IrqTuningConfig {
 		},
 		DisableXPS:               false,
 		NicAffinitySocketsPolicy: EachNicBalanceAllSockets,
-		IrqCoresExpectedCpuUtil:  50,
 		ThroughputClassSwitchConf: ThroughputClassSwitchConfig{
 			LowThroughputThresholds: LowThroughputThresholds{
 				RxPPSThreshold:  3000,
@@ -204,54 +239,66 @@ func NewConfiguration() *IrqTuningConfig {
 				SuccessiveCount: 10,
 			},
 		},
-		ReniceIrqCoresKsoftirqd: false,
-		IrqCoresKsoftirqdNice:   -20,
-		IrqCoreNetOverLoadThreshold: IrqCoreNetOverloadThresholds{
-			IrqCoreSoftNetTimeSqueezeRatio: 0.1,
-		},
-		IrqLoadBalanceConf: IrqLoadBalanceConfig{
-			SuccessiveTuningInterval: 10,
-			Thresholds: IrqLoadBalanceTuningThresholds{
-				IrqCoreCpuUtilThreshold:    65,
-				IrqCoreCpuUtilGapThreshold: 20,
-			},
-			PingPongIntervalThreshold:   180,
-			PingPongCountThresh:         1,
-			IrqsTunedNumMaxEachTime:     2,
-			IrqCoresTunedNumMaxEachTime: 1,
-		},
-		IrqCoresAdjustConf: IrqCoresAdjustConfig{
-			IrqCoresPercentMin: 2,
-			IrqCoresPercentMax: 30,
-			IrqCoresIncConf: IrqCoresIncConfig{
-				SuccessiveIncInterval:    5,
-				IrqCoresCpuFullThreshold: 85,
-				Thresholds: IrqCoresIncThresholds{
-					IrqCoresAvgCpuUtilThreshold: 60,
+		IrqCoresExclusiveConfig: IrqCoresExclusiveConfig{
+			ExclusiveIrqCoresAllocPolicy: Dynamic,
+			DynamicIrqCoresExclusive: DynamicIrqCoresExclusive{
+				IrqCoresExpectedCpuUtil: 50,
+				IrqCoresAdjustConf: IrqCoresAdjustConfig{
+					IrqCoresPercentMin: 2,
+					IrqCoresPercentMax: 30,
+					IrqCoresIncConf: IrqCoresIncConfig{
+						SuccessiveIncInterval:    5,
+						IrqCoresCpuFullThreshold: 85,
+						Thresholds: IrqCoresIncThresholds{
+							IrqCoresAvgCpuUtilThreshold: 60,
+						},
+					},
+					IrqCoresDecConf: IrqCoresDecConfig{
+						SuccessiveDecInterval:    30,
+						PingPongAdjustInterval:   300,
+						SinceLastBalanceInterval: 60,
+						Thresholds: IrqCoresDecThresholds{
+							IrqCoresAvgCpuUtilThreshold: 40,
+						},
+						DecCoresMaxEachTime: 1,
+					},
+				},
+				IrqCoresExclusionConf: IrqCoresExclusionConfig{
+					Thresholds: IrqCoresExclusionThresholds{
+						EnableThresholds: EnableIrqCoresExclusionThresholds{
+							RxPPSThreshold:  60000,
+							SuccessiveCount: 30,
+						},
+						DisableThresholds: DisableIrqCoresExclusionThresholds{
+							RxPPSThreshold:  30000,
+							SuccessiveCount: 30,
+						},
+					},
+					SuccessiveSwitchInterval: 600,
 				},
 			},
-			IrqCoresDecConf: IrqCoresDecConfig{
-				SuccessiveDecInterval:    30,
-				PingPongAdjustInterval:   300,
-				SinceLastBalanceInterval: 60,
-				Thresholds: IrqCoresDecThresholds{
-					IrqCoresAvgCpuUtilThreshold: 40,
-				},
-				DecCoresMaxEachTime: 1,
+			StaticIrqCoresExclusive: StaticIrqCoresExclusive{
+				Nics:                 "",
+				IrqCoresCount:        0,
+				IrqCoresRatio:        0.15,
+				EnableIrqLoadBalance: true,
 			},
-		},
-		IrqCoresExclusionConf: IrqCoresExclusionConfig{
-			Thresholds: IrqCoresExclusionThresholds{
-				EnableThresholds: EnableIrqCoresExclusionThresholds{
-					RxPPSThreshold:  60000,
-					SuccessiveCount: 30,
+			IrqLoadBalanceConf: IrqLoadBalanceConfig{
+				SuccessiveTuningInterval: 10,
+				Thresholds: IrqLoadBalanceTuningThresholds{
+					IrqCoreCpuUtilThreshold:    65,
+					IrqCoreCpuUtilGapThreshold: 20,
 				},
-				DisableThresholds: DisableIrqCoresExclusionThresholds{
-					RxPPSThreshold:  30000,
-					SuccessiveCount: 30,
-				},
+				PingPongIntervalThreshold:   180,
+				PingPongCountThresh:         1,
+				IrqsTunedNumMaxEachTime:     2,
+				IrqCoresTunedNumMaxEachTime: 1,
 			},
-			SuccessiveSwitchInterval: 600,
+			IrqCoreNetOverLoadThreshold: IrqCoreNetOverloadThresholds{
+				IrqCoreSoftNetTimeSqueezeRatio: 0.1,
+			},
+			ReniceIrqCoresKsoftirqd: false,
+			IrqCoresKsoftirqdNice:   -20,
 		},
 	}
 }
