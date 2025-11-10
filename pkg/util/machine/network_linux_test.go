@@ -232,7 +232,7 @@ func testDoNetNS(t *testing.T) {
 			mockSetup:       func() {},
 			expectError:     false,
 			cb: func(sysFsDir string) error {
-				So(sysFsDir, ShouldEqual, sysFSDirNormal)
+				So(sysFsDir, ShouldEqual, DefaultNetNSSysDir)
 				return nil
 			},
 		},
@@ -254,7 +254,7 @@ func testDoNetNS(t *testing.T) {
 			},
 			expectError: false,
 			cb: func(sysFsDir string) error {
-				So(sysFsDir, ShouldEqual, sysFSDirNetNSTmp)
+				So(sysFsDir, ShouldEqual, TmpNetNSSysDir)
 				return nil
 			},
 		},
@@ -323,7 +323,7 @@ func testDoNetNS(t *testing.T) {
 				Mock(os.Stat).Return(nil, fmt.Errorf("stat error")).Build()
 			},
 			expectError:            true,
-			expectedErrorSubstring: "failed to stat /tmp/net_ns_sysfs, err stat error",
+			expectedErrorSubstring: "failed to stat /qrm_tmp_sys/net_ns_sysfs, err stat error",
 			cb:                     func(sysFsDir string) error { return nil },
 		},
 		{
@@ -341,7 +341,7 @@ func testDoNetNS(t *testing.T) {
 				Mock(os.MkdirAll).Return(fmt.Errorf("mkdir error")).Build()
 			},
 			expectError:            true,
-			expectedErrorSubstring: "failed to create /tmp/net_ns_sysfs, err mkdir error",
+			expectedErrorSubstring: "failed to create /qrm_tmp_sys/net_ns_sysfs, err mkdir error",
 			cb:                     func(sysFsDir string) error { return nil },
 		},
 		{
@@ -359,7 +359,7 @@ func testDoNetNS(t *testing.T) {
 				Mock(mountinfo.Mounted).Return(false, fmt.Errorf("mounted check error")).Build()
 			},
 			expectError:            true,
-			expectedErrorSubstring: "check mounted dir: /tmp/net_ns_sysfs failed with error: mounted check error",
+			expectedErrorSubstring: "check mounted dir: /qrm_tmp_sys/net_ns_sysfs failed with error: mounted check error",
 			cb:                     func(sysFsDir string) error { return nil },
 		},
 		{
@@ -378,7 +378,7 @@ func testDoNetNS(t *testing.T) {
 				Mock(syscall.Mount).Return(fmt.Errorf("mount error")).Build()
 			},
 			expectError:            true,
-			expectedErrorSubstring: "failed to mount sysfs at /tmp/net_ns_sysfs, err mount error",
+			expectedErrorSubstring: "failed to mount sysfs at /qrm_tmp_sys/net_ns_sysfs, err mount error",
 			cb:                     func(sysFsDir string) error { return nil },
 		},
 		{
@@ -421,7 +421,7 @@ func testDoNetNS(t *testing.T) {
 			},
 			expectError: false,
 			cb: func(sysFsDir string) error {
-				So(sysFsDir, ShouldEqual, sysFSDirNetNSTmp)
+				So(sysFsDir, ShouldEqual, TmpNetNSSysDir)
 				return nil
 			},
 		},
@@ -444,7 +444,7 @@ func testDoNetNS(t *testing.T) {
 			},
 			expectError: false,
 			cb: func(sysFsDir string) error {
-				So(sysFsDir, ShouldEqual, sysFSDirNetNSTmp)
+				So(sysFsDir, ShouldEqual, TmpNetNSSysDir)
 				return nil
 			},
 		},
