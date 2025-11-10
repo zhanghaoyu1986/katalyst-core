@@ -170,6 +170,16 @@ type IrqCoresExclusionConfig struct {
 	SuccessiveSwitchInterval float64 // interval of successive enable/disable irq cores exclusion MUST >= SuccessiveSwitchInterval
 }
 
+type DynamicIrqCoresExclusive struct {
+	IrqCoreNetOverLoadThreshold IrqCoreNetOverloadThresholds
+	IrqLoadBalanceConf          IrqLoadBalanceConfig
+	IrqCoresAdjustConf          IrqCoresAdjustConfig
+	IrqCoresExclusionConf       IrqCoresExclusionConfig
+}
+
+type StaticIrqCoresExclusive struct {
+}
+
 // IrqTuningConfig is the configuration for irq-tuning
 type IrqTuningConfig struct {
 	Interval                    int
@@ -184,10 +194,9 @@ type IrqTuningConfig struct {
 	ThroughputClassSwitchConf   ThroughputClassSwitchConfig
 	ReniceIrqCoresKsoftirqd     bool
 	IrqCoresKsoftirqdNice       int
-	IrqCoreNetOverLoadThreshold IrqCoreNetOverloadThresholds
-	IrqLoadBalanceConf          IrqLoadBalanceConfig
-	IrqCoresAdjustConf          IrqCoresAdjustConfig
-	IrqCoresExclusionConf       IrqCoresExclusionConfig
+	ExclusiveIrqCoresAllocPolicy
+	DynamicIrqCoresExclusive
+	StaticIrqCoresExclusive
 }
 
 func NewConfiguration() *IrqTuningConfig {
@@ -215,52 +224,54 @@ func NewConfiguration() *IrqTuningConfig {
 		},
 		ReniceIrqCoresKsoftirqd: false,
 		IrqCoresKsoftirqdNice:   -20,
-		IrqCoreNetOverLoadThreshold: IrqCoreNetOverloadThresholds{
-			IrqCoreSoftNetTimeSqueezeRatio: 0.1,
-		},
-		IrqLoadBalanceConf: IrqLoadBalanceConfig{
-			SuccessiveTuningInterval: 10,
-			Thresholds: IrqLoadBalanceTuningThresholds{
-				IrqCoreCpuUtilThreshold:    65,
-				IrqCoreCpuUtilGapThreshold: 20,
+		DynamicIrqCoresExclusive: DynamicIrqCoresExclusive{
+			IrqCoreNetOverLoadThreshold: IrqCoreNetOverloadThresholds{
+				IrqCoreSoftNetTimeSqueezeRatio: 0.1,
 			},
-			PingPongIntervalThreshold:   180,
-			PingPongCountThresh:         1,
-			IrqsTunedNumMaxEachTime:     2,
-			IrqCoresTunedNumMaxEachTime: 1,
-		},
-		IrqCoresAdjustConf: IrqCoresAdjustConfig{
-			IrqCoresPercentMin: 2,
-			IrqCoresPercentMax: 30,
-			IrqCoresIncConf: IrqCoresIncConfig{
-				SuccessiveIncInterval:    5,
-				IrqCoresCpuFullThreshold: 85,
-				Thresholds: IrqCoresIncThresholds{
-					IrqCoresAvgCpuUtilThreshold: 60,
+			IrqLoadBalanceConf: IrqLoadBalanceConfig{
+				SuccessiveTuningInterval: 10,
+				Thresholds: IrqLoadBalanceTuningThresholds{
+					IrqCoreCpuUtilThreshold:    65,
+					IrqCoreCpuUtilGapThreshold: 20,
+				},
+				PingPongIntervalThreshold:   180,
+				PingPongCountThresh:         1,
+				IrqsTunedNumMaxEachTime:     2,
+				IrqCoresTunedNumMaxEachTime: 1,
+			},
+			IrqCoresAdjustConf: IrqCoresAdjustConfig{
+				IrqCoresPercentMin: 2,
+				IrqCoresPercentMax: 30,
+				IrqCoresIncConf: IrqCoresIncConfig{
+					SuccessiveIncInterval:    5,
+					IrqCoresCpuFullThreshold: 85,
+					Thresholds: IrqCoresIncThresholds{
+						IrqCoresAvgCpuUtilThreshold: 60,
+					},
+				},
+				IrqCoresDecConf: IrqCoresDecConfig{
+					SuccessiveDecInterval:    30,
+					PingPongAdjustInterval:   300,
+					SinceLastBalanceInterval: 60,
+					Thresholds: IrqCoresDecThresholds{
+						IrqCoresAvgCpuUtilThreshold: 40,
+					},
+					DecCoresMaxEachTime: 1,
 				},
 			},
-			IrqCoresDecConf: IrqCoresDecConfig{
-				SuccessiveDecInterval:    30,
-				PingPongAdjustInterval:   300,
-				SinceLastBalanceInterval: 60,
-				Thresholds: IrqCoresDecThresholds{
-					IrqCoresAvgCpuUtilThreshold: 40,
+			IrqCoresExclusionConf: IrqCoresExclusionConfig{
+				Thresholds: IrqCoresExclusionThresholds{
+					EnableThresholds: EnableIrqCoresExclusionThresholds{
+						RxPPSThreshold:  60000,
+						SuccessiveCount: 30,
+					},
+					DisableThresholds: DisableIrqCoresExclusionThresholds{
+						RxPPSThreshold:  30000,
+						SuccessiveCount: 30,
+					},
 				},
-				DecCoresMaxEachTime: 1,
+				SuccessiveSwitchInterval: 600,
 			},
-		},
-		IrqCoresExclusionConf: IrqCoresExclusionConfig{
-			Thresholds: IrqCoresExclusionThresholds{
-				EnableThresholds: EnableIrqCoresExclusionThresholds{
-					RxPPSThreshold:  60000,
-					SuccessiveCount: 30,
-				},
-				DisableThresholds: DisableIrqCoresExclusionThresholds{
-					RxPPSThreshold:  30000,
-					SuccessiveCount: 30,
-				},
-			},
-			SuccessiveSwitchInterval: 600,
 		},
 	}
 }
