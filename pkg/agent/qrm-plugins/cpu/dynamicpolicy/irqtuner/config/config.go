@@ -52,6 +52,15 @@ const (
 	NicPhysicalTopoBindNuma NicAffinitySocketsPolicy = "physical-topo-bind"
 )
 
+type ExclusiveIrqCoresAllocPolicy string
+
+const (
+	// exclusive irq cores number is static configured
+	Static ExclusiveIrqCoresAllocPolicy = "static"
+	// exclusive irq cores is dynamic tuned according to irq load
+	Dynamic ExclusiveIrqCoresAllocPolicy = "dynamic"
+)
+
 // RPSExcludeIrqCoresThreshold determines if excluding irq-cores in rx queue's rps_cpus,
 // if rps qualified cores count versus irq cores count of rps qualified cores is greater-equal RPSCoresVSIrqCoresRatio,
 // then rps_cpus excludes irq cores.
