@@ -2993,7 +2993,7 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityCCDsFairly(nic *NicInfo, irqs 
 }
 
 func (ic *IrqTuningController) tuneNicIrqsAffinityLLCDomainsFairly(nic *NicInfo, assignedSockets []int) error {
-	general.Infof("%s tuneNicIrqsAffinityLLCDomainsFairly was in", IrqTuningLogPrefix)
+	general.Infof("%s tuneNicIrqsAffinityLLCDomainsFairly was in, nic %s", IrqTuningLogPrefix, nic)
 	if ic.CPUInfo.CPUVendor == cpuid.Intel {
 		return ic.tuneNicIrqsAffinityNumasFairly(nic, assignedSockets, false)
 	} else if ic.CPUInfo.CPUVendor == cpuid.AMD {
@@ -3004,7 +3004,7 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityLLCDomainsFairly(nic *NicInfo,
 }
 
 func (ic *IrqTuningController) tuneNicIrqsAffinityFairly(nic *NicInfo, assignedSockets []int) error {
-	general.Infof("%s tuneNicIrqsAffinityFairly was in", IrqTuningLogPrefix)
+	general.Infof("%s tuneNicIrqsAffinityFairly was in, nic %s", IrqTuningLogPrefix, nic)
 	// only enable ccd balance when static config IrqTuningBalanceFair, disable ccd balance when
 	// IrqTuningPolicy is IrqTuningAuto, because if ic.conf.IrqTuningPolicy is IrqTuningAuto, which means
 	// there may have both IrqBalanceFair nic and IrqCoresExclusive nic, IrqCoresExclusive nic's irq cores

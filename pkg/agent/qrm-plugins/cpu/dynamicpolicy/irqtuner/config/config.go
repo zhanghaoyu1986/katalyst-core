@@ -650,6 +650,7 @@ func ConvertDynamicConfigToIrqTuningConfig(dynamicConf *dynconfig.Configuration)
 	}
 
 	conf.EnableIrqTuning = true
+	conf.Interval = 300
 	conf.IrqTuningPolicy = IrqTuningIrqCoresExclusive
 	conf.NicAffinitySocketsPolicy = OverallNicsBalanceAllSockets
 
