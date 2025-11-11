@@ -649,5 +649,9 @@ func ConvertDynamicConfigToIrqTuningConfig(dynamicConf *dynconfig.Configuration)
 		conf.IrqCoresKsoftirqdNice = dynamicConf.IRQTuningConfiguration.KsoftirqdNice
 	}
 
+	conf.EnableIrqTuning = true
+	conf.IrqTuningPolicy = IrqTuningIrqCoresExclusive
+	conf.NicAffinitySocketsPolicy = OverallNicsBalanceAllSockets
+
 	return conf
 }
