@@ -166,34 +166,29 @@ type IrqTuningConfig struct {
 	Interval                    int
 	EnableIrqTuning             bool
 	IrqTuningPolicy             IrqTuningPolicy
+	NicAffinitySocketsPolicy    NicAffinitySocketsPolicy    // nics's irqs affinity sockets policy
+	ThroughputClassSwitchConf   ThroughputClassSwitchConfig // classify nics by rx throughput
 	EnableRPS                   bool                        // enable rps according to machine specifications configured by kcc, only balance-fair policy support enable rps
 	EnableRPSCPUVSNicsQueue     float64                     // enable rps when (cpus count)/(nics queue count) greater than this config
 	RPSExcludeIrqCoresThreshold RPSExcludeIrqCoresThreshold // threshold of excluding irq cores in rx queue's rps_cpus
 	DisableXPS                  bool                        // disable xps according to machine specification
-	NicAffinitySocketsPolicy    NicAffinitySocketsPolicy    // nics's irqs affinity sockets policy
+
+	// irq-cores-exclusive policy related config
 	IrqCoresExpectedCpuUtil     int
-	ThroughputClassSwitchConf   ThroughputClassSwitchConfig
-	ReniceIrqCoresKsoftirqd     bool
-	IrqCoresKsoftirqdNice       int
 	IrqCoreNetOverLoadThreshold IrqCoreNetOverloadThresholds
 	IrqLoadBalanceConf          IrqLoadBalanceConfig
 	IrqCoresAdjustConf          IrqCoresAdjustConfig
 	IrqCoresExclusionConf       IrqCoresExclusionConfig
+	ReniceIrqCoresKsoftirqd     bool
+	IrqCoresKsoftirqdNice       int
 }
 
 func NewConfiguration() *IrqTuningConfig {
 	return &IrqTuningConfig{
-		Interval:                5,
-		EnableIrqTuning:         false,
-		IrqTuningPolicy:         IrqTuningBalanceFair,
-		EnableRPS:               false,
-		EnableRPSCPUVSNicsQueue: 0,
-		RPSExcludeIrqCoresThreshold: RPSExcludeIrqCoresThreshold{
-			RPSCoresVSIrqCoresRatio: 4,
-		},
-		DisableXPS:               false,
+		Interval:                 5,
+		EnableIrqTuning:          false,
+		IrqTuningPolicy:          IrqTuningBalanceFair,
 		NicAffinitySocketsPolicy: EachNicBalanceAllSockets,
-		IrqCoresExpectedCpuUtil:  50,
 		ThroughputClassSwitchConf: ThroughputClassSwitchConfig{
 			LowThroughputThresholds: LowThroughputThresholds{
 				RxPPSThreshold:  3000,
@@ -204,8 +199,13 @@ func NewConfiguration() *IrqTuningConfig {
 				SuccessiveCount: 10,
 			},
 		},
-		ReniceIrqCoresKsoftirqd: false,
-		IrqCoresKsoftirqdNice:   -20,
+		EnableRPS:               false,
+		EnableRPSCPUVSNicsQueue: 0,
+		RPSExcludeIrqCoresThreshold: RPSExcludeIrqCoresThreshold{
+			RPSCoresVSIrqCoresRatio: 4,
+		},
+		DisableXPS:              false,
+		IrqCoresExpectedCpuUtil: 50,
 		IrqCoreNetOverLoadThreshold: IrqCoreNetOverloadThresholds{
 			IrqCoreSoftNetTimeSqueezeRatio: 0.1,
 		},
@@ -253,6 +253,8 @@ func NewConfiguration() *IrqTuningConfig {
 			},
 			SuccessiveSwitchInterval: 600,
 		},
+		ReniceIrqCoresKsoftirqd: false,
+		IrqCoresKsoftirqdNice:   -20,
 	}
 }
 
@@ -262,13 +264,7 @@ func (c *IrqTuningConfig) String() string {
 	msg = fmt.Sprintf("%s    Interval: %d\n", msg, c.Interval)
 	msg = fmt.Sprintf("%s    EnableIrqTuning: %t\n", msg, c.EnableIrqTuning)
 	msg = fmt.Sprintf("%s    IrqTuningPolicy: %s\n", msg, c.IrqTuningPolicy)
-	msg = fmt.Sprintf("%s    EnableRPS: %t\n", msg, c.EnableRPS)
-	msg = fmt.Sprintf("%s    EnableRPSCPUVSNicsQueue: %f\n", msg, c.EnableRPSCPUVSNicsQueue)
-	msg = fmt.Sprintf("%s    RPSExcludeIrqCoresThreshold:\n", msg)
-	msg = fmt.Sprintf("%s    	RPSCoresVSIrqCoresRatio: %f\n", msg, c.RPSExcludeIrqCoresThreshold.RPSCoresVSIrqCoresRatio)
-	msg = fmt.Sprintf("%s    DisableXPS: %t\n", msg, c.DisableXPS)
 	msg = fmt.Sprintf("%s    NicAffinitySocketsPolicy: %s\n", msg, c.NicAffinitySocketsPolicy)
-	msg = fmt.Sprintf("%s    IrqCoresExpectedCpuUtil: %d\n", msg, c.IrqCoresExpectedCpuUtil)
 	msg = fmt.Sprintf("%s    ThroughputClassSwitchConf:\n", msg)
 	msg = fmt.Sprintf("%s        LowThroughputThresholds:\n", msg)
 	msg = fmt.Sprintf("%s            RxPPSThreshold: %d\n", msg, c.ThroughputClassSwitchConf.LowThroughputThresholds.RxPPSThreshold)
@@ -276,8 +272,12 @@ func (c *IrqTuningConfig) String() string {
 	msg = fmt.Sprintf("%s        NormalThroughputThresholds:\n", msg)
 	msg = fmt.Sprintf("%s            RxPPSThreshold: %d\n", msg, c.ThroughputClassSwitchConf.NormalThroughputThresholds.RxPPSThreshold)
 	msg = fmt.Sprintf("%s            SuccessiveCount: %d\n", msg, c.ThroughputClassSwitchConf.NormalThroughputThresholds.SuccessiveCount)
-	msg = fmt.Sprintf("%s    ReniceIrqCoresKsoftirqd: %t\n", msg, c.ReniceIrqCoresKsoftirqd)
-	msg = fmt.Sprintf("%s    IrqCoresKsoftirqdNice: %d\n", msg, c.IrqCoresKsoftirqdNice)
+	msg = fmt.Sprintf("%s    EnableRPS: %t\n", msg, c.EnableRPS)
+	msg = fmt.Sprintf("%s    EnableRPSCPUVSNicsQueue: %f\n", msg, c.EnableRPSCPUVSNicsQueue)
+	msg = fmt.Sprintf("%s    RPSExcludeIrqCoresThreshold:\n", msg)
+	msg = fmt.Sprintf("%s    	RPSCoresVSIrqCoresRatio: %f\n", msg, c.RPSExcludeIrqCoresThreshold.RPSCoresVSIrqCoresRatio)
+	msg = fmt.Sprintf("%s    DisableXPS: %t\n", msg, c.DisableXPS)
+	msg = fmt.Sprintf("%s    IrqCoresExpectedCpuUtil: %d\n", msg, c.IrqCoresExpectedCpuUtil)
 	msg = fmt.Sprintf("%s    IrqCoreNetOverLoadThreshold:\n", msg)
 	msg = fmt.Sprintf("%s        IrqCoreSoftNetTimeSqueezeRatio: %f\n", msg, c.IrqCoreNetOverLoadThreshold.IrqCoreSoftNetTimeSqueezeRatio)
 	msg = fmt.Sprintf("%s    IrqLoadBalanceConf:\n", msg)
@@ -313,6 +313,8 @@ func (c *IrqTuningConfig) String() string {
 	msg = fmt.Sprintf("%s                RxPPSThreshold: %d\n", msg, c.IrqCoresExclusionConf.Thresholds.DisableThresholds.RxPPSThreshold)
 	msg = fmt.Sprintf("%s                SuccessiveCount: %d\n", msg, c.IrqCoresExclusionConf.Thresholds.DisableThresholds.SuccessiveCount)
 	msg = fmt.Sprintf("%s        SuccessiveSwitchInterval: %f", msg, c.IrqCoresExclusionConf.SuccessiveSwitchInterval)
+	msg = fmt.Sprintf("%s    ReniceIrqCoresKsoftirqd: %t\n", msg, c.ReniceIrqCoresKsoftirqd)
+	msg = fmt.Sprintf("%s    IrqCoresKsoftirqdNice: %d\n", msg, c.IrqCoresKsoftirqdNice)
 
 	return msg
 }
@@ -335,24 +337,6 @@ func ValidateIrqTuningDynamicConfig(dynamicConf *dynconfig.Configuration) error 
 		return fmt.Errorf("invalid TuningInterval: %d, less-than IrqTuingMinInterval: %d", conf.TuningInterval, IrqTuningIntervalMin)
 	}
 
-	if conf.EnableRPSCPUVSNicsQueue < EnableRPSCPUVSNicsQueueMin && conf.EnableRPSCPUVSNicsQueue != 0 {
-		return fmt.Errorf("invalid EnableRPSCPUVSNicsQueue: %f, less-than EnableRPSCPUVSNicsQueueMin %d", conf.EnableRPSCPUVSNicsQueue, EnableRPSCPUVSNicsQueueMin)
-	}
-
-	if conf.RPSExcludeIRQCoresThreshold != nil {
-		if conf.RPSExcludeIRQCoresThreshold.RPSCoresVSIRQCoresRatio < RPSExcludeIrqCoresThresholdMin {
-			return fmt.Errorf("invalid RPSExcludeIrqCoresThreshold.RPSCoresVSIrqCoresRatio: %f, less-than RPSExcludeIrqCoresThresholdMin %d", conf.RPSExcludeIRQCoresThreshold.RPSCoresVSIRQCoresRatio, RPSExcludeIrqCoresThresholdMin)
-		}
-	}
-
-	if conf.KsoftirqdNice < ProcessNiceMin || conf.KsoftirqdNice > ProcessNiceMax {
-		return fmt.Errorf("invalid KsoftirqdNice: %d", conf.KsoftirqdNice)
-	}
-
-	if conf.CoresExpectedCPUUtil <= 0 || conf.CoresExpectedCPUUtil >= 100 {
-		return fmt.Errorf("invalid CoresExpectedCPUUtil: %d", conf.CoresExpectedCPUUtil)
-	}
-
 	if conf.ThroughputClassSwitchConf != nil {
 		if conf.ThroughputClassSwitchConf.LowThresholdConfig != nil {
 			if conf.ThroughputClassSwitchConf.LowThresholdConfig.SuccessiveCount <= 0 {
@@ -373,6 +357,20 @@ func ValidateIrqTuningDynamicConfig(dynamicConf *dynconfig.Configuration) error 
 					conf.ThroughputClassSwitchConf.LowThresholdConfig.RxPPSThreshold, conf.ThroughputClassSwitchConf.NormalThresholdConfig.RxPPSThreshold)
 			}
 		}
+	}
+
+	if conf.EnableRPSCPUVSNicsQueue < EnableRPSCPUVSNicsQueueMin && conf.EnableRPSCPUVSNicsQueue != 0 {
+		return fmt.Errorf("invalid EnableRPSCPUVSNicsQueue: %f, less-than EnableRPSCPUVSNicsQueueMin %d", conf.EnableRPSCPUVSNicsQueue, EnableRPSCPUVSNicsQueueMin)
+	}
+
+	if conf.RPSExcludeIRQCoresThreshold != nil {
+		if conf.RPSExcludeIRQCoresThreshold.RPSCoresVSIRQCoresRatio < RPSExcludeIrqCoresThresholdMin {
+			return fmt.Errorf("invalid RPSExcludeIrqCoresThreshold.RPSCoresVSIrqCoresRatio: %f, less-than RPSExcludeIrqCoresThresholdMin %d", conf.RPSExcludeIRQCoresThreshold.RPSCoresVSIRQCoresRatio, RPSExcludeIrqCoresThresholdMin)
+		}
+	}
+
+	if conf.CoresExpectedCPUUtil <= 0 || conf.CoresExpectedCPUUtil >= 100 {
+		return fmt.Errorf("invalid CoresExpectedCPUUtil: %d", conf.CoresExpectedCPUUtil)
 	}
 
 	if conf.LoadBalanceConf != nil {
@@ -529,6 +527,10 @@ func ValidateIrqTuningDynamicConfig(dynamicConf *dynconfig.Configuration) error 
 		}
 	}
 
+	if conf.KsoftirqdNice < ProcessNiceMin || conf.KsoftirqdNice > ProcessNiceMax {
+		return fmt.Errorf("invalid KsoftirqdNice: %d", conf.KsoftirqdNice)
+	}
+
 	return nil
 }
 
@@ -554,13 +556,6 @@ func ConvertDynamicConfigToIrqTuningConfig(dynamicConf *dynconfig.Configuration)
 			conf.IrqTuningPolicy = IrqTuningBalanceFair
 		}
 
-		conf.EnableRPS = dynamicConf.IRQTuningConfiguration.EnableRPS
-		conf.EnableRPSCPUVSNicsQueue = dynamicConf.IRQTuningConfiguration.EnableRPSCPUVSNicsQueue
-		if dynamicConf.RPSExcludeIRQCoresThreshold != nil {
-			conf.RPSExcludeIrqCoresThreshold.RPSCoresVSIrqCoresRatio = dynamicConf.RPSExcludeIRQCoresThreshold.RPSCoresVSIRQCoresRatio
-		}
-		conf.DisableXPS = dynamicConf.IRQTuningConfiguration.DisableXPS
-
 		switch dynamicConf.IRQTuningConfiguration.NICAffinityPolicy {
 		case v1alpha1.NICAffinityPolicyPhysicalTopo:
 			conf.NicAffinitySocketsPolicy = NicPhysicalTopoBindNuma
@@ -571,8 +566,6 @@ func ConvertDynamicConfigToIrqTuningConfig(dynamicConf *dynconfig.Configuration)
 		default:
 			conf.NicAffinitySocketsPolicy = OverallNicsBalanceAllSockets
 		}
-
-		conf.IrqCoresExpectedCpuUtil = dynamicConf.IRQTuningConfiguration.CoresExpectedCPUUtil
 
 		if dynamicConf.IRQTuningConfiguration.ThroughputClassSwitchConf != nil {
 			throughputClassSwitchConf := dynamicConf.IRQTuningConfiguration.ThroughputClassSwitchConf
@@ -587,8 +580,14 @@ func ConvertDynamicConfigToIrqTuningConfig(dynamicConf *dynconfig.Configuration)
 			}
 		}
 
-		conf.ReniceIrqCoresKsoftirqd = dynamicConf.IRQTuningConfiguration.ReniceKsoftirqd
-		conf.IrqCoresKsoftirqdNice = dynamicConf.IRQTuningConfiguration.KsoftirqdNice
+		conf.EnableRPS = dynamicConf.IRQTuningConfiguration.EnableRPS
+		conf.EnableRPSCPUVSNicsQueue = dynamicConf.IRQTuningConfiguration.EnableRPSCPUVSNicsQueue
+		if dynamicConf.RPSExcludeIRQCoresThreshold != nil {
+			conf.RPSExcludeIrqCoresThreshold.RPSCoresVSIrqCoresRatio = dynamicConf.RPSExcludeIRQCoresThreshold.RPSCoresVSIRQCoresRatio
+		}
+		conf.DisableXPS = dynamicConf.IRQTuningConfiguration.DisableXPS
+
+		conf.IrqCoresExpectedCpuUtil = dynamicConf.IRQTuningConfiguration.CoresExpectedCPUUtil
 
 		if dynamicConf.IRQTuningConfiguration.CoreNetOverLoadThreshold != nil {
 			conf.IrqCoreNetOverLoadThreshold.IrqCoreSoftNetTimeSqueezeRatio = dynamicConf.IRQTuningConfiguration.CoreNetOverLoadThreshold.SoftNetTimeSqueezeRatio
@@ -645,6 +644,9 @@ func ConvertDynamicConfigToIrqTuningConfig(dynamicConf *dynconfig.Configuration)
 				conf.IrqCoresExclusionConf.SuccessiveSwitchInterval = dynCoresExclusionConf.SuccessiveSwitchInterval
 			}
 		}
+
+		conf.ReniceIrqCoresKsoftirqd = dynamicConf.IRQTuningConfiguration.ReniceKsoftirqd
+		conf.IrqCoresKsoftirqdNice = dynamicConf.IRQTuningConfiguration.KsoftirqdNice
 	}
 
 	return conf
