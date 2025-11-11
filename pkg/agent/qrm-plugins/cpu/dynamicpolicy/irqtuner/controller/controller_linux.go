@@ -2854,6 +2854,7 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityQualifiedCores(nic *NicInfo, i
 //     better total bandwidth balance in its assigned sockets.
 //  2. nic level irq balance is simpler than all nics(balance-fair policy)'s irqs balance.
 func (ic *IrqTuningController) tuneNicIrqsAffinityNumasFairly(nic *NicInfo, assignedSockets []int, ccdsBalance bool) error {
+	general.Infof("%s tuneNicIrqsAffinityNumasFairly was in, nic %s", IrqTuningLogPrefix, nic)
 	var tunedIrqs []int
 	var numasWithNotEnoughQualifiedResource []int
 
@@ -2992,6 +2993,7 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityCCDsFairly(nic *NicInfo, irqs 
 }
 
 func (ic *IrqTuningController) tuneNicIrqsAffinityLLCDomainsFairly(nic *NicInfo, assignedSockets []int) error {
+	general.Infof("%s tuneNicIrqsAffinityLLCDomainsFairly was in", IrqTuningLogPrefix)
 	if ic.CPUInfo.CPUVendor == cpuid.Intel {
 		return ic.tuneNicIrqsAffinityNumasFairly(nic, assignedSockets, false)
 	} else if ic.CPUInfo.CPUVendor == cpuid.AMD {
@@ -3002,6 +3004,7 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityLLCDomainsFairly(nic *NicInfo,
 }
 
 func (ic *IrqTuningController) tuneNicIrqsAffinityFairly(nic *NicInfo, assignedSockets []int) error {
+	general.Infof("%s tuneNicIrqsAffinityFairly was in", IrqTuningLogPrefix)
 	// only enable ccd balance when static config IrqTuningBalanceFair, disable ccd balance when
 	// IrqTuningPolicy is IrqTuningAuto, because if ic.conf.IrqTuningPolicy is IrqTuningAuto, which means
 	// there may have both IrqBalanceFair nic and IrqCoresExclusive nic, IrqCoresExclusive nic's irq cores
@@ -3353,6 +3356,7 @@ func (ic *IrqTuningController) TuneIrqAffinityForAllNicsWithBalanceFairPolicy() 
 }
 
 func (ic *IrqTuningController) restoreNicsOriginalIrqCoresExclusivePolicy() {
+	general.Infof("%s restoreNicsOriginalIrqCoresExclusivePolicy was in", IrqTuningLogPrefix)
 	initTuning := false
 	nics := ic.getAllNics()
 	for _, nic := range nics {
@@ -3372,6 +3376,7 @@ func (ic *IrqTuningController) restoreNicsOriginalIrqCoresExclusivePolicy() {
 		return
 	}
 
+	general.Infof("%s restoreNicsOriginalIrqCoresExclusivePolicy len(totalExclusiveIrqCores) = %d", IrqTuningLogPrefix, len(totalExclusiveIrqCores))
 	if len(totalExclusiveIrqCores) == 0 {
 		return
 	}
@@ -3418,6 +3423,7 @@ func (ic *IrqTuningController) restoreNicsOriginalIrqCoresExclusivePolicy() {
 // balanceNicsIrqsInInitTuning balance nics irqs across corresponding qualified cpus, try to (but not guarantee) ensure
 // that the irq cores of different nics do not overlap, for better evaluation of each nic's irq load.
 func (ic *IrqTuningController) balanceNicsIrqsInInitTuning() {
+	general.Infof("%s balanceNicsIrqsInInitTuning was in", IrqTuningLogPrefix)
 	initTuning := false
 	for _, nic := range ic.Nics {
 		if nic.IrqAffinityPolicy == InitTuning {
@@ -5543,6 +5549,7 @@ func (ic *IrqTuningController) periodicTuningIrqCoresExclusive() {
 	}()
 
 	if !ic.nicsRPSCleared() {
+		general.Infof("%s !ic.nicsRPSCleared", IrqTuningLogPrefix)
 		if err := ic.clearRPSForNics(ic.getAllNics()); err != nil {
 			general.Errorf("%s failed to clearRPSForNics, err %s", IrqTuningLogPrefix, err)
 			return
@@ -5550,6 +5557,8 @@ func (ic *IrqTuningController) periodicTuningIrqCoresExclusive() {
 
 		// wait a while to settle down the net-rx softirq usage
 		time.Sleep(time.Minute)
+	} else {
+		general.Infof("%s ic.nicsRPSCleared", IrqTuningLogPrefix)
 	}
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////
