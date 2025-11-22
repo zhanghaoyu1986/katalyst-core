@@ -100,6 +100,8 @@ func (c *IRQTuningConfiguration) ApplyConfiguration(conf *crd.DynamicConfigCRD) 
 			c.CoresExpectedCPUUtil = *itc.Spec.Config.CoresExpectedCPUUtil
 		}
 
+		c.NormalThroughputNics = append(c.NormalThroughputNics, itc.Spec.Config.NormalThroughputNics...)
+
 		c.RPSExcludeIRQCoresThreshold.ApplyConfiguration(conf)
 		c.ThroughputClassSwitchConf.ApplyConfiguration(conf)
 		c.CoreNetOverLoadThreshold.ApplyConfiguration(conf)

@@ -137,3 +137,57 @@ func TestSortQueuePPSSliceInDecOrder(t *testing.T) {
 	assert.Equal(t, uint64(200), queuePPS[1].PPS)
 	assert.Equal(t, uint64(100), queuePPS[2].PPS)
 }
+
+func TestCalculateQueuePPS(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		oldStats    *NicStats
+		newStats    *NicStats
+		timeDiff    float64
+		expectedLen int
+	}{{
+		name: "valid pps calculation",
+		oldStats: &NicStats{
+			RxQueuePackets: map[int]uint64{0: 1000, 1: 2000},
+		},
+		newStats: &NicStats{
+			RxQueuePackets: map[int]uint64{0: 2000, 1: 4000},
+		},
+		timeDiff:    10.0,
+		expectedLen: 2,
+	}, {
+		name: "new packets less than old",
+		oldStats: &NicStats{
+			RxQueuePackets: map[int]uint64{0: 2000},
+		},
+		newStats: &NicStats{
+			RxQueuePackets: map[int]uint64{0: 1000},
+		},
+		timeDiff:    10.0,
+		expectedLen: 0,
+	}, {
+		name: "negative time diff",
+		oldStats: &NicStats{
+			RxQueuePackets: map[int]uint64{0: 1000},
+		},
+		newStats: &NicStats{
+			RxQueuePackets: map[int]uint64{0: 2000},
+		},
+		timeDiff:    -5.0,
+		expectedLen: 0,
+	}}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := calculateQueuePPS(tc.oldStats, tc.newStats, tc.timeDiff)
+			assert.Len(t, result, tc.expectedLen)
+			if tc.name == "valid pps calculation" {
+				assert.Equal(t, uint64(100), result[0].PPS)
+				assert.Equal(t, uint64(200), result[1].PPS)
+			}
+		})
+	}
+}
