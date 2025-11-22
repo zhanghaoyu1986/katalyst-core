@@ -2147,7 +2147,7 @@ func (ic *IrqTuningController) classifyNicsByThroughputFirstTime(nics []*machine
 			if ic.isStaticConfiguredNormalThroughputNic(nic) {
 				normalThroughputNics = append(normalThroughputNics, nic)
 			} else {
-				lowThroughputNics = append(lowThroughputNics)
+				lowThroughputNics = append(lowThroughputNics, nic)
 			}
 		}
 
