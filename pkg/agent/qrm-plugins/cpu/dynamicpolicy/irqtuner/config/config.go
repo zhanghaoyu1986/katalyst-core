@@ -18,6 +18,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 
@@ -364,6 +365,12 @@ func ValidateIrqTuningDynamicConfig(dynamicConf *dynconfig.Configuration) error 
 		return fmt.Errorf("invalid CoresExpectedCPUUtil: %d", conf.CoresExpectedCPUUtil)
 	}
 
+	for _, nic := range conf.NormalThroughputNics {
+		if len(strings.Split(nic, "/")) > 2 {
+			return fmt.Errorf("invalid nic name: %s", nic)
+		}
+	}
+
 	if conf.ThroughputClassSwitchConf != nil {
 		if conf.ThroughputClassSwitchConf.LowThresholdConfig != nil {
 			if conf.ThroughputClassSwitchConf.LowThresholdConfig.SuccessiveCount <= 0 {
@@ -585,7 +592,20 @@ func ConvertDynamicConfigToIrqTuningConfig(dynamicConf *dynconfig.Configuration)
 
 		conf.IrqCoresExpectedCpuUtil = dynamicConf.IRQTuningConfiguration.CoresExpectedCPUUtil
 
-		conf.NormalThroughputNics = append(conf.NormalThroughputNics, dynamicConf.IRQTuningConfiguration.NormalThroughputNics...)
+		for _, nic := range dynamicConf.IRQTuningConfiguration.NormalThroughputNics {
+			var n NicInfo
+			fields := strings.Split(nic, "/")
+			if len(fields) == 1 {
+				n.NicName = fields[0]
+			} else if len(fields) == 2 {
+				n.NetNSName = fields[0]
+				n.NicName = fields[1]
+			} else {
+				continue
+			}
+
+			conf.NormalThroughputNics = append(conf.NormalThroughputNics, n)
+		}
 
 		if dynamicConf.IRQTuningConfiguration.ThroughputClassSwitchConf != nil {
 			throughputClassSwitchConf := dynamicConf.IRQTuningConfiguration.ThroughputClassSwitchConf
