@@ -138,3 +138,38 @@ func Test_configuredStaticNormalThroughputNics(t *testing.T) {
 		})
 	})
 }
+
+func Test_isStaticConfiguredNormalThroughputNic(t *testing.T) {
+	t.Parallel()
+	PatchConvey("Test_isStaticConfiguredNormalThroughputNic", t, func() {
+		ic := &IrqTuningController{
+			conf: &config.IrqTuningConfig{
+				NormalThroughputNics: []config.NicInfo{
+					{
+						NicName: "eth0",
+					},
+				},
+			},
+		}
+
+		nic := &machine.NicBasicInfo{
+			InterfaceInfo: machine.InterfaceInfo{
+				Name: "eth0",
+			},
+		}
+
+		PatchConvey("Scenario 1: is static normal throughput nics", func() {
+			b := ic.isStaticConfiguredNormalThroughputNic(nic)
+
+			So(b, ShouldBeTrue)
+		})
+
+		PatchConvey("Scenario 2: not static normal throughput nics", func() {
+			nic.Name = "eth2"
+
+			b := ic.isStaticConfiguredNormalThroughputNic(nic)
+
+			So(b, ShouldBeFalse)
+		})
+	})
+}
