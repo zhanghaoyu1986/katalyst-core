@@ -27,6 +27,7 @@ import (
 	. "github.com/bytedance/mockey"
 	. "github.com/smartystreets/goconvey/convey"
 
+	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/cpu/dynamicpolicy/irqtuner/config"
 	"github.com/kubewharf/katalyst-core/pkg/util/machine"
 )
 
@@ -105,6 +106,35 @@ func Test_clearNicXPS(t *testing.T) {
 			err := ic.clearNicXPS(nic)
 
 			So(err, ShouldBeNil)
+		})
+	})
+}
+
+func Test_configuredStaticNormalThroughputNics(t *testing.T) {
+	t.Parallel()
+	PatchConvey("Test_configuredStaticNormalThroughputNics", t, func() {
+		ic := &IrqTuningController{
+			conf: &config.IrqTuningConfig{
+				NormalThroughputNics: []config.NicInfo{
+					{
+						NicName: "eth0",
+					},
+				},
+			},
+		}
+
+		PatchConvey("Scenario 1: configured static normal throughput nics", func() {
+			b := ic.configuredStaticNormalThroughputNics()
+
+			So(b, ShouldBeTrue)
+		})
+
+		PatchConvey("Scenario 2: not configured static normal throughput nics", func() {
+			ic.conf.NormalThroughputNics = []config.NicInfo{}
+
+			b := ic.configuredStaticNormalThroughputNics()
+
+			So(b, ShouldBeFalse)
 		})
 	})
 }
