@@ -59,6 +59,11 @@ type RPSExcludeIrqCoresThreshold struct {
 	RPSCoresVSIrqCoresRatio float64
 }
 
+type NicInfo struct {
+	NicName   string
+	NetNSName string // host netns name is empty
+}
+
 // LowThroughputThresholds thresholds of classifying a nic to low throughput class, if a nic's throughput meet LowThroughputThresholds, then
 // this nic will be considered as low througput nic, low throughput nic's irq affinity will be dealed separately, doesnot
 // affect normal throughput nic's irq affinity and socket assignments.
@@ -172,6 +177,7 @@ type IrqTuningConfig struct {
 	DisableXPS                  bool                        // disable xps according to machine specification
 	NicAffinitySocketsPolicy    NicAffinitySocketsPolicy    // nics's irqs affinity sockets policy
 	IrqCoresExpectedCpuUtil     int
+	NormalThroughputNics        []NicInfo // if NormalThroughputNics length is zero, then dynmamically classify nics according to ThroughputClassSwitchConf
 	ThroughputClassSwitchConf   ThroughputClassSwitchConfig
 	ReniceIrqCoresKsoftirqd     bool
 	IrqCoresKsoftirqdNice       int
@@ -269,6 +275,11 @@ func (c *IrqTuningConfig) String() string {
 	msg = fmt.Sprintf("%s    DisableXPS: %t\n", msg, c.DisableXPS)
 	msg = fmt.Sprintf("%s    NicAffinitySocketsPolicy: %s\n", msg, c.NicAffinitySocketsPolicy)
 	msg = fmt.Sprintf("%s    IrqCoresExpectedCpuUtil: %d\n", msg, c.IrqCoresExpectedCpuUtil)
+	msg = fmt.Sprintf("%s    NormalThroughputNics:\n", msg)
+	for _, nic := range c.NormalThroughputNics {
+		msg = fmt.Sprintf("%s        NicName: %s:\n", msg, nic.NicName)
+		msg = fmt.Sprintf("%s        NetNSName: %s:\n", msg, nic.NetNSName)
+	}
 	msg = fmt.Sprintf("%s    ThroughputClassSwitchConf:\n", msg)
 	msg = fmt.Sprintf("%s        LowThroughputThresholds:\n", msg)
 	msg = fmt.Sprintf("%s            RxPPSThreshold: %d\n", msg, c.ThroughputClassSwitchConf.LowThroughputThresholds.RxPPSThreshold)
@@ -573,6 +584,8 @@ func ConvertDynamicConfigToIrqTuningConfig(dynamicConf *dynconfig.Configuration)
 		}
 
 		conf.IrqCoresExpectedCpuUtil = dynamicConf.IRQTuningConfiguration.CoresExpectedCPUUtil
+
+		conf.NormalThroughputNics = append(conf.NormalThroughputNics, dynamicConf.IRQTuningConfiguration.NormalThroughputNics...)
 
 		if dynamicConf.IRQTuningConfiguration.ThroughputClassSwitchConf != nil {
 			throughputClassSwitchConf := dynamicConf.IRQTuningConfiguration.ThroughputClassSwitchConf
