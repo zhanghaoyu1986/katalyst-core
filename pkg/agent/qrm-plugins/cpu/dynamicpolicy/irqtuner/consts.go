@@ -29,6 +29,7 @@ const (
 	NewIrqTuningControllerFailed                            string = "NewIrqTuningControllerFailed"
 	InvalidDynamicConfig                                    string = "InvalidDynamicConfig"
 	SyncNicFailed                                           string = "SyncNicFailed"
+	UpdateNicIrqTuningManagersFailed                        string = "UpdateNicIrqTuningManagersFailed"
 	SyncContainersFailed                                    string = "SyncContainersFailed"
 	TuneIrqAffinityForAllNicsWithBalanceFairPolicyFailed    string = "TuneIrqAffinityForAllNicsWithBalanceFairPolicyFailed"
 	GetCurrentTotalExclusiveIrqCoresFailed                  string = "GetCurrentTotalExclusiveIrqCoresFailed"
