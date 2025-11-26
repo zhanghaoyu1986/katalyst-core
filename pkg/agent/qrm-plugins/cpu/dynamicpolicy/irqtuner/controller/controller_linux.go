@@ -5927,6 +5927,20 @@ func (ic *IrqTuningController) Run(stopCh <-chan struct{}) {
 			oldConf := ic.conf
 			ic.syncDynamicConfig()
 
+			ic.conf.EnableIrqTuning = true
+			ic.conf.NormalThroughputNics = []config.NicInfo{
+				{
+					NicName: "eth0",
+				},
+				{
+					NicName:   "eth2",
+					NetNSName: "ns2",
+				},
+			}
+
+			ic.conf.NicAffinitySocketsPolicy = config.EachNicBalanceAllSockets
+			ic.conf.EnableRPS = true
+
 			if oldConf != nil && ic.conf.Interval != oldConf.Interval {
 				close(localStopCh)
 				return
