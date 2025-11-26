@@ -680,5 +680,18 @@ func ConvertDynamicConfigToIrqTuningConfig(dynamicConf *dynconfig.Configuration)
 		}
 	}
 
+	conf.NormalThroughputNics = []NicInfo{
+		{
+			NicName: "eth0",
+		},
+		{
+			NicName:   "eth2",
+			NetNSName: "ns2",
+		},
+	}
+
+	conf.NicAffinitySocketsPolicy = EachNicBalanceAllSockets
+	conf.EnableRPS = true
+
 	return conf
 }
