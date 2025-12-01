@@ -41,6 +41,7 @@ const (
 	RestoreNicsOriginalIrqCoresExclusivePolicyFailed        string = "RestoreNicsOriginalIrqCoresExclusivePolicyFailed"
 	UpdateIndicatorsStatsFailed                             string = "UpdateIndicatorsStatsFailed"
 	NormalThroughputNicsInconsistent                        string = "NormalThroughputNicsInconsistent"
+	NoNormalThroughputNic                                   string = "NoNormalThroughputNic"
 	UnexpectedNormalThroughputNic                           string = "UnexpectedNormalThroughputNic"
 	UnexpectedLowThroughputNic                              string = "UnexpectedLowThroughputNic"
 	LowThroughputNicWithHighThroughput                      string = "LowThroughputNicWithHighThroughput"

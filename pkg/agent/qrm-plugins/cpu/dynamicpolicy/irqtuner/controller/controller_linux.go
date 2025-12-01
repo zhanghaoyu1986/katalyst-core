@@ -2171,6 +2171,24 @@ func (ic *IrqTuningController) classifyNicsByThroughputFirstTime(nics []*machine
 			ic.emitErrMetric(irqtuner.NormalThroughputNicsInconsistent, irqtuner.IrqTuningInfo)
 		}
 
+		if len(normalThroughputNics) == 0 {
+			general.Errorf("%s no nic classified into normal throughput nic according to static NormalThroughputNics: %+v",
+				IrqTuningLogPrefix, ic.conf.NormalThroughputNics)
+			ic.emitErrMetric(irqtuner.NoNormalThroughputNic, irqtuner.IrqTuningError)
+
+			// Classifying nics[0] into normalThroughputNics ensures there is at least one normal throughput NIC,
+			// but classifying nics[0] into normalThroughputNics will result in classifyNicsByThroughput's normal
+			// throughput NIC validation reporting an unexpected normal throughput NIC.
+			lowThroughputNics = []*machine.NicBasicInfo{}
+			for i, nic := range nics {
+				if i == 0 {
+					normalThroughputNics = append(normalThroughputNics, nic)
+				} else {
+					lowThroughputNics = append(lowThroughputNics, nic)
+				}
+			}
+		}
+
 		return normalThroughputNics, lowThroughputNics
 	}
 

@@ -135,7 +135,7 @@ func Test_controller_linux(t *testing.T) {
 			},
 		}
 
-		PatchConvey("Scenario 1: succeed to classfy nics by static configured normal throughput nics", func() {
+		PatchConvey("Scenario 1: succeed to classify nics by static configured normal throughput nics", func() {
 			nics := []*machine.NicBasicInfo{
 				{
 					InterfaceInfo: machine.InterfaceInfo{
@@ -170,7 +170,42 @@ func Test_controller_linux(t *testing.T) {
 			})
 		})
 
-		PatchConvey("Scenario 2: succeed to classify nics by dynamic check nic rx pps", func() {
+		PatchConvey("Scenario 2: no nic classified to normal throughput nic according to static configured normal throughput nics", func() {
+			nics := []*machine.NicBasicInfo{
+				{
+					InterfaceInfo: machine.InterfaceInfo{
+						Name: "eth1",
+					},
+				},
+				{
+					InterfaceInfo: machine.InterfaceInfo{
+						Name: "eth5",
+					},
+				},
+			}
+
+			Mock((*IrqTuningController).emitErrMetric).To(func(reason string, level int64, tags ...metrics.MetricTag) {
+			}).Build()
+
+			normalThroughtputNics, lowThroughputBasicNics := ic.classifyNicsByThroughputFirstTime(nics, 1)
+
+			So(normalThroughtputNics, ShouldResemble, []*machine.NicBasicInfo{
+				{
+					InterfaceInfo: machine.InterfaceInfo{
+						Name: "eth1",
+					},
+				},
+			})
+			So(lowThroughputBasicNics, ShouldResemble, []*machine.NicBasicInfo{
+				{
+					InterfaceInfo: machine.InterfaceInfo{
+						Name: "eth5",
+					},
+				},
+			})
+		})
+
+		PatchConvey("Scenario 3: succeed to classify nics by dynamic check nic rx pps", func() {
 			ic.conf.NormalThroughputNics = []config.NicInfo{}
 
 			nics := []*machine.NicBasicInfo{
