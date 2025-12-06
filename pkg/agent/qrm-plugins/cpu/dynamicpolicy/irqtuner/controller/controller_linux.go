@@ -3949,7 +3949,7 @@ func (ic *IrqTuningController) calculateExclusiveIrqCores(nic *NicIrqTuningManag
 
 	exclusiveIrqCoresMin := ic.getNicExclusiveIrqCoresMin(nic)
 	if expectedIrqCoresCount < exclusiveIrqCoresMin {
-		expectedIrqCoresCount = exclusiveIrqCoresMax
+		expectedIrqCoresCount = exclusiveIrqCoresMin
 	}
 
 	return expectedIrqCoresCount
@@ -4071,27 +4071,28 @@ func (ic *IrqTuningController) selectExclusiveIrqCoresForNic(nic *NicIrqTuningMa
 	return exclusiveIrqCores, nil
 }
 
-func (ic *IrqTuningController) calculateNicExclusiveIrqCoresIncrease(nic *NicIrqTuningManager, oldIndicatorsStats *IndicatorsStats) ([]int64, error) {
+func (ic *IrqTuningController) calculateNicExclusiveIrqCoresNumByCpuUtil(nic *NicIrqTuningManager, oldIndicatorsStats *IndicatorsStats) (int, bool, error) {
+	oriIrqCoresNum := len(nic.NicInfo.getIrqCores())
 	incConf := ic.conf.IrqCoresAdjustConf.IrqCoresIncConf
 	lastInc := nic.LastExclusiveIrqCoresInc
 
 	if lastInc != nil && time.Since(lastInc.TimeStamp).Seconds() < float64(incConf.SuccessiveIncInterval) {
 		general.Infof("%s two successive exclusive irq cores increase interval %d less than configured interval threshold %d",
 			IrqTuningLogPrefix, int(time.Since(lastInc.TimeStamp).Seconds()), incConf.SuccessiveIncInterval)
-		return nil, nil
+		return oriIrqCoresNum, false, nil
 	}
 
 	exclusiveIrqCoresMax := ic.getNicExclusiveIrqCoresMax(nic)
 	if len(nic.NicInfo.getIrqCores()) >= exclusiveIrqCoresMax {
 		general.Warningf("%s nic %s exclusive irq cores count %d has already reached max limit %d, cannot increase any more",
 			IrqTuningLogPrefix, nic.NicInfo, len(nic.NicInfo.getIrqCores()), exclusiveIrqCoresMax)
-		return nil, nil
+		return oriIrqCoresNum, false, nil
 	}
 
 	_, cpuUtilAvg := calculateCpuUtils(oldIndicatorsStats.CPUStats, ic.IndicatorsStats.CPUStats, nic.NicInfo.getIrqCores())
 
 	if cpuUtilAvg.IrqUtil < incConf.Thresholds.IrqCoresAvgCpuUtilThreshold {
-		return nil, nil
+		return oriIrqCoresNum, false, nil
 	}
 
 	if cpuUtilAvg.IrqUtil >= incConf.IrqCoresCpuFullThreshold {
@@ -4101,7 +4102,7 @@ func (ic *IrqTuningController) calculateNicExclusiveIrqCoresIncrease(nic *NicIrq
 			general.Errorf("%s failed to TuneNicIrqAffinityWithBalanceFairPolicy for nic %s, err %s", IrqTuningLogPrefix, nic.NicInfo, err)
 		}
 
-		return nil, nil
+		return oriIrqCoresNum, true, nil
 	}
 
 	irqCoresCpuUsage := float64(len(nic.NicInfo.getIrqCores())*cpuUtilAvg.IrqUtil) / 100
@@ -4112,12 +4113,40 @@ func (ic *IrqTuningController) calculateNicExclusiveIrqCoresIncrease(nic *NicIrq
 	if expectedIrqCoresCount <= oriIrqCoresCount {
 		general.Warningf("%s nic %s needless to increase irq cores, new calculated irq cores count is %d, original irq cores count %d",
 			IrqTuningLogPrefix, nic.NicInfo, expectedIrqCoresCount, oriIrqCoresCount)
+		return 0, false, nil
+	}
+
+	return expectedIrqCoresCount, false, nil
+}
+
+func (ic *IrqTuningController) calculateNicExclusiveIrqCoresIncrease(nic *NicIrqTuningManager, oldIndicatorsStats *IndicatorsStats) ([]int64, error) {
+	newIrqCoresCount, fallback, err := ic.calculateNicExclusiveIrqCoresNumByCpuUtil(nic, oldIndicatorsStats)
+	if err != nil {
+		return nil, err
+	}
+
+	if fallback {
 		return nil, nil
 	}
 
-	newIrqCores, err := ic.selectExclusiveIrqCoresForNic(nic, expectedIrqCoresCount)
+	exclusiveIrqCoresMin := ic.getNicExclusiveIrqCoresMin(nic)
+	if exclusiveIrqCoresMin > newIrqCoresCount {
+		newIrqCoresCount = exclusiveIrqCoresMin
+	}
+
+	if newIrqCoresCount < len(nic.NicInfo.getIrqCores()) {
+		general.Errorf("%s nic %s new irq cores count %d less-then original irq cores count %d when calculateNicExclusiveIrqCoresIncrease",
+			IrqTuningLogPrefix, nic.NicInfo, newIrqCoresCount, len(nic.NicInfo.getIrqCores()))
+		return nil, nil
+	}
+
+	if newIrqCoresCount == len(nic.NicInfo.getIrqCores()) {
+		return nil, nil
+	}
+
+	newIrqCores, err := ic.selectExclusiveIrqCoresForNic(nic, newIrqCoresCount)
 	if err != nil {
-		return nil, fmt.Errorf("failed to selectExclusiveIrqCoresForNic for nic %s with exclusive irq core count %d", nic.NicInfo, expectedIrqCoresCount)
+		return nil, fmt.Errorf("failed to selectExclusiveIrqCoresForNic for nic %s with exclusive irq core count %d", nic.NicInfo, newIrqCoresCount)
 	}
 
 	return newIrqCores, nil
@@ -4195,8 +4224,6 @@ func (ic *IrqTuningController) calculateExclusiveIrqCoresIncrease(oldIndicatorsS
 			irqAffChange.NewIrqCores = irqCores
 		}
 	}
-
-	return
 }
 
 func (ic *IrqTuningController) isPingPongIrqBalance(nic *NicIrqTuningManager, srcIrqCore int64, dstIrqCore int64) bool {
