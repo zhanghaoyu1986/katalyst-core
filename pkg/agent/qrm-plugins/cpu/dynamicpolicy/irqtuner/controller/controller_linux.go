@@ -3505,9 +3505,9 @@ func (ic *IrqTuningController) restoreNicsOriginalIrqCoresExclusivePolicy() {
 		if len(nicExclusiveIrqCores) < len(nicIrqCores) {
 			// set nic irq affinity policy to IrqCoresExclusive here, then this nic's exclusive irq cores will be released in fallbackToBalanceFairPolicyByError
 			nic.IrqAffinityPolicy = IrqCoresExclusive
-			err := fmt.Errorf("nic %s irq cores count %d, exclusive irq cores count %d", nic.NicInfo, len(nicIrqCores), len(nicExclusiveIrqCores))
-			ic.fallbackToBalanceFairPolicyByError(nic, err)
-			ic.emitErrMetric(irqtuner.RestoreNicsOriginalIrqCoresExclusivePolicyFailed, irqtuner.IrqTuningWarning)
+			general.Errorf("%s nic %s irq cores count %d, not equal to exclusive irq cores count %d",
+				IrqTuningLogPrefix, nic.NicInfo, len(nicIrqCores), len(nicExclusiveIrqCores))
+			ic.fallbackToBalanceFairPolicyByError(nic, irqtuner.RestoreNicsOriginalIrqCoresExclusivePolicyFailed)
 		} else {
 			nic.IrqAffinityPolicy = IrqCoresExclusive
 
@@ -3741,9 +3741,7 @@ retry:
 	return nil
 }
 
-func (ic *IrqTuningController) fallbackToBalanceFairPolicyByError(nic *NicIrqTuningManager, err error) {
-	general.Infof("%s fallback to balance-fair policy for nic %s, by err %s", IrqTuningLogPrefix, nic.NicInfo, err)
-
+func (ic *IrqTuningController) fallbackToBalanceFairPolicyByError(nic *NicIrqTuningManager, reason string) {
 	nic.FallbackToBalanceFair = true
 
 	// get IrqAffinityPolicy before TuneNicIrqAffinityWithBalanceFairPolicy
@@ -3770,6 +3768,8 @@ func (ic *IrqTuningController) fallbackToBalanceFairPolicyByError(nic *NicIrqTun
 			general.Errorf("%s failed to decrease irq cores, err %s", IrqTuningLogPrefix, err)
 		}
 	}
+
+	ic.emitErrMetric(reason, irqtuner.IrqTuningError, metrics.MetricTag{Key: "nic", Val: nic.NicInfo.UniqName()})
 }
 
 func buildNicIrqAffinityChange(nic *NicIrqTuningManager, newIrqAffinityPolicy IrqAffinityPolicy, newIrqCores []int64) *IrqAffinityChange {
@@ -4152,10 +4152,9 @@ func (ic *IrqTuningController) calculateExclusiveIrqCoresIncrease(oldIndicatorsS
 
 		newIrqCores, err := ic.calculateNicExclusiveIrqCoresIncrease(nic, oldIndicatorsStats)
 		if err != nil {
-			err := fmt.Errorf("failed to calculateNicExclusiveIrqCoresIncrease for nic %s, err %s",
-				nic.NicInfo, err)
-			ic.fallbackToBalanceFairPolicyByError(nic, err)
-			ic.emitErrMetric(irqtuner.CalculateNicExclusiveIrqCoresIncreaseFailed, irqtuner.IrqTuningError)
+			general.Errorf("%s failed to calculateNicExclusiveIrqCoresIncrease for nic %s, err %s",
+				IrqTuningLogPrefix, nic.NicInfo, err)
+			ic.fallbackToBalanceFairPolicyByError(nic, irqtuner.CalculateNicExclusiveIrqCoresIncreaseFailed)
 			continue
 		}
 
@@ -4183,10 +4182,9 @@ func (ic *IrqTuningController) calculateExclusiveIrqCoresIncrease(oldIndicatorsS
 		if irqAffChange.NewIrqAffinityPolicy == IrqCoresExclusive && irqAffChange.OldIrqAffinityPolicy != IrqCoresExclusive {
 			irqCores, err := ic.calculateNicIrqCoresWhenSwitchToIrqCoresExclusive(irqAffChange.Nic, oldIndicatorsStats)
 			if err != nil {
-				err := fmt.Errorf("failed to calculateNicIrqCoresWhenSwitchToIrqCoresExclusive for nic %s, err %s",
-					irqAffChange.Nic.NicInfo, err)
-				ic.fallbackToBalanceFairPolicyByError(nic, err)
-				ic.emitErrMetric(irqtuner.CalculateNicIrqCoresWhenSwitchToIrqCoresExclusiveFailed, irqtuner.IrqTuningError)
+				general.Errorf("%s failed to calculateNicIrqCoresWhenSwitchToIrqCoresExclusive for nic %s, err %s",
+					IrqTuningLogPrefix, irqAffChange.Nic.NicInfo, err)
+				ic.fallbackToBalanceFairPolicyByError(nic, irqtuner.CalculateNicIrqCoresWhenSwitchToIrqCoresExclusiveFailed)
 				continue
 			}
 			irqAffChange.NewIrqCores = irqCores
@@ -4485,9 +4483,8 @@ func (ic *IrqTuningController) balanceIrqsForNicsWithExclusiveIrqCores(oldIndica
 			newIrqCoresCount := len(nic.NicInfo.getIrqCores()) + 1
 			newIrqCores, err := ic.selectExclusiveIrqCoresForNic(nic, newIrqCoresCount)
 			if err != nil {
-				err := fmt.Errorf("failed to selectExclusiveIrqCoresForNic, err %s", err)
-				ic.fallbackToBalanceFairPolicyByError(nic, err)
-				ic.emitErrMetric(irqtuner.SelectExclusiveIrqCoresForNicFailed, irqtuner.IrqTuningError)
+				general.Errorf("%s failed to selectExclusiveIrqCoresForNic, nic %s, err %s", IrqTuningLogPrefix, nic.NicInfo, err)
+				ic.fallbackToBalanceFairPolicyByError(nic, irqtuner.SelectExclusiveIrqCoresForNicFailed)
 				continue
 			} else {
 				irqAffinityChange = buildNicIrqAffinityChange(nic, nic.IrqAffinityPolicy, newIrqCores)
@@ -4574,10 +4571,9 @@ func (ic *IrqTuningController) calculateExclusiveIrqCoresDecrease(oldIndicatorsS
 
 		newIrqCores, err := ic.calculateNicExclusiveIrqCoresDecrease(nic, oldIndicatorsStats)
 		if err != nil {
-			err := fmt.Errorf("failed to calculateNicExclusiveIrqCoresDecrease for nic %s, err %s",
-				nic.NicInfo, err)
-			ic.fallbackToBalanceFairPolicyByError(nic, err)
-			ic.emitErrMetric(irqtuner.CalculateNicExclusiveIrqCoresDecreaseFailed, irqtuner.IrqTuningError)
+			general.Errorf("%s failed to calculateNicExclusiveIrqCoresDecrease for nic %s, err %s",
+				IrqTuningLogPrefix, nic.NicInfo, err)
+			ic.fallbackToBalanceFairPolicyByError(nic, irqtuner.CalculateNicExclusiveIrqCoresDecreaseFailed)
 			continue
 		}
 
@@ -4620,10 +4616,9 @@ func (ic *IrqTuningController) reAdjustAllNicsExclusiveIrqCores() {
 			if change.NewIrqAffinityPolicy == IrqCoresExclusive {
 				newIrqCores, err := ic.selectExclusiveIrqCoresForNic(nic, len(change.NewIrqCores))
 				if err != nil {
-					err := fmt.Errorf("failed to selectExclusiveIrqCoresForNic for nic %s with expected irq cores count %d, err %s",
-						nic.NicInfo, len(change.NewIrqCores), err)
-					ic.fallbackToBalanceFairPolicyByError(nic, err)
-					ic.emitErrMetric(irqtuner.SelectExclusiveIrqCoresForNicFailed, irqtuner.IrqTuningError)
+					general.Errorf("%s failed to selectExclusiveIrqCoresForNic for nic %s with expected irq cores count %d, err %s",
+						IrqTuningLogPrefix, nic.NicInfo, len(change.NewIrqCores), err)
+					ic.fallbackToBalanceFairPolicyByError(nic, irqtuner.SelectExclusiveIrqCoresForNicFailed)
 					continue
 				}
 				change.NewIrqCores = newIrqCores
@@ -4633,10 +4628,9 @@ func (ic *IrqTuningController) reAdjustAllNicsExclusiveIrqCores() {
 				irqCores := nic.NicInfo.getIrqCores()
 				newIrqCores, err := ic.selectExclusiveIrqCoresForNic(nic, len(irqCores))
 				if err != nil {
-					err := fmt.Errorf("failed to selectExclusiveIrqCoresForNic for nic %s with expected irq cores count %d, err %s",
-						nic.NicInfo, len(change.NewIrqCores), err)
-					ic.fallbackToBalanceFairPolicyByError(nic, err)
-					ic.emitErrMetric(irqtuner.SelectExclusiveIrqCoresForNicFailed, irqtuner.IrqTuningError)
+					general.Errorf("%s failed to selectExclusiveIrqCoresForNic for nic %s with expected irq cores count %d, err %s",
+						IrqTuningLogPrefix, nic.NicInfo, len(change.NewIrqCores), err)
+					ic.fallbackToBalanceFairPolicyByError(nic, irqtuner.SelectExclusiveIrqCoresForNicFailed)
 					continue
 				}
 
@@ -4680,9 +4674,9 @@ func (ic *IrqTuningController) handleUnqualifiedCoresChangeForExclusiveIrqCores(
 
 		newIrqCores, err := ic.selectExclusiveIrqCoresForNic(nic, len(irqCores))
 		if err != nil {
-			err := fmt.Errorf("failed to selectExclusiveIrqCoresForNic for nic %s with exclusive irq core count %d", nic.NicInfo, len(irqCores))
-			ic.fallbackToBalanceFairPolicyByError(nic, err)
-			ic.emitErrMetric(irqtuner.SelectExclusiveIrqCoresForNicFailed, irqtuner.IrqTuningError)
+			general.Errorf("%s failed to selectExclusiveIrqCoresForNic for nic %s with exclusive irq core count %d, err %s",
+				IrqTuningLogPrefix, nic.NicInfo, len(irqCores), err)
+			ic.fallbackToBalanceFairPolicyByError(nic, irqtuner.SelectExclusiveIrqCoresForNicFailed)
 			continue
 		}
 
@@ -5229,9 +5223,8 @@ func (ic *IrqTuningController) balanceNicsIrqsToNewIrqCores(oldIndicatorsStats *
 		}
 
 		if err := ic.balanceNicIrqsToNewIrqCores(nic, change.NewIrqCores, oldIndicatorsStats); err != nil {
-			err := fmt.Errorf("failed to balanceNicIrqsToNewIrqCores for nic %s, err %s", nic.NicInfo, err)
-			ic.fallbackToBalanceFairPolicyByError(nic, err)
-			ic.emitErrMetric(irqtuner.BalanceNicIrqsToNewIrqCoresFailed, irqtuner.IrqTuningError)
+			general.Errorf("%s failed to balanceNicIrqsToNewIrqCores for nic %s, err %s", IrqTuningLogPrefix, nic.NicInfo, err)
+			ic.fallbackToBalanceFairPolicyByError(nic, irqtuner.BalanceNicIrqsToNewIrqCoresFailed)
 		}
 	}
 
@@ -5248,9 +5241,8 @@ func (ic *IrqTuningController) balanceNicsIrqsToNewIrqCores(oldIndicatorsStats *
 
 		if change.OldIrqAffinityPolicy != IrqCoresExclusive && change.NewIrqAffinityPolicy == IrqCoresExclusive {
 			if err := ic.tuneNicIrqAffinityPolicyToIrqCoresExclusive(nic, change.NewIrqCores, oldIndicatorsStats); err != nil {
-				err := fmt.Errorf("failed to tuneNicIrqAffinityPolicyToIrqCoresExclusive for nic %s, err %s", nic.NicInfo, err)
-				ic.fallbackToBalanceFairPolicyByError(nic, err)
-				ic.emitErrMetric(irqtuner.TuneNicIrqAffinityPolicyToIrqCoresExclusiveFailed, irqtuner.IrqTuningError)
+				general.Errorf("%s failed to tuneNicIrqAffinityPolicyToIrqCoresExclusive for nic %s, err %s", IrqTuningLogPrefix, nic.NicInfo, err)
+				ic.fallbackToBalanceFairPolicyByError(nic, irqtuner.TuneNicIrqAffinityPolicyToIrqCoresExclusiveFailed)
 			}
 		}
 	}
