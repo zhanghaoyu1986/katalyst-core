@@ -350,7 +350,7 @@ type NicIrqTuningManager struct {
 	Conf                  *config.IrqTuningConfig
 	NicInfo               *NicInfo
 	IrqAffinityPolicy     IrqAffinityPolicy
-	FallbackToBalanceFair bool  // if server error happened in IrqCoresExclusive policy, then fallback to balance-fair policy, and cannot be changed back again.
+	FallbackToBalanceFair bool  // if severe error happened in IrqCoresExclusive policy, then fallback to balance-fair policy, and cannot be changed back again.
 	AssignedSockets       []int // assigned sockets which nic irqs should affinity to, which are determined by the number of active nics and nic's bound numa in physical topo
 	ExclusiveIrqCoresSelectOrder
 	NicThroughputClassSwitchStat
@@ -3792,8 +3792,6 @@ func buildNicIrqAffinityChange(nic *NicIrqTuningManager, newIrqAffinityPolicy Ir
 // nic.IrqAffinityPolicy will be changed when practically processing irqAffinityChangedNics later
 // in adaptIrqAffinityPolicy only record IrqAffinityChange
 func (ic *IrqTuningController) adaptIrqAffinityPolicy(oldIndicatorsStats *IndicatorsStats) {
-	timeDiff := ic.IndicatorsStats.UpdateTime.Sub(oldIndicatorsStats.UpdateTime).Seconds()
-
 	shouldFallbackToBalanceFairPolicy := false
 	// if there are irq affinity forbidden container or sriov container, then fallback to balance-fair policy,
 	// but needless to set nic.FallbackToBalanceFair = true
@@ -3814,12 +3812,16 @@ func (ic *IrqTuningController) adaptIrqAffinityPolicy(oldIndicatorsStats *Indica
 			continue
 		}
 
+		// When the IrqTuningIrqCoresExclusive policy is configured,
+		// nic.IrqAffinityPolicy is unconditionally switched to IrqCoresExclusive.
 		if ic.conf.IrqTuningPolicy == config.IrqTuningIrqCoresExclusive {
 			if nic.IrqAffinityPolicy != IrqCoresExclusive {
 				ic.IrqAffinityChanges[nic.NicInfo.IfIndex] = buildNicIrqAffinityChange(nic, IrqCoresExclusive, nil)
 			}
 			continue
 		}
+
+		// following processing is intended for the IrqTuningAuto policy
 
 		oldStats, ok := oldNicStats[nic.NicInfo.IfIndex]
 		if !ok {
@@ -3838,6 +3840,11 @@ func (ic *IrqTuningController) adaptIrqAffinityPolicy(oldIndicatorsStats *Indica
 			continue
 		}
 
+		timeDiff := ic.IndicatorsStats.UpdateTime.Sub(oldIndicatorsStats.UpdateTime).Seconds()
+		if timeDiff == 0 {
+			general.Errorf("%s nic %s two successive IndicatorsStats update time gap less than 1 second", IrqTuningLogPrefix, nic.NicInfo)
+			continue
+		}
 		rxPPS := (stats.TotalRxPackets - oldStats.TotalRxPackets) / uint64(timeDiff)
 
 		if nic.IrqAffinityPolicy == InitTuning {
@@ -3877,8 +3884,6 @@ func (ic *IrqTuningController) adaptIrqAffinityPolicy(oldIndicatorsStats *Indica
 			}
 		}
 	}
-
-	return
 }
 
 // getUnqualifiedCoresMapForNicExclusiveIrqCores get unqualified cores for nic exclusive irq cores
