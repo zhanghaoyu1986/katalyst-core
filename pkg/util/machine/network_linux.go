@@ -80,6 +80,12 @@ const (
 	SoftIrqsFile       = "/proc/softirqs"
 )
 
+const (
+	MlxSF   = "mlx5_core.sf"
+	ByteNic = "bytenic"
+	Xsc     = "xsc"
+)
+
 var ErrUnsupportedNicIrq2Queue = errors.New("unsupported nic irq to queue mapping")
 
 var netnsMutex sync.Mutex
@@ -535,7 +541,9 @@ func GetNicTxQueuesXpsConf(nic *NicBasicInfo) (map[int]string, error) {
 }
 
 func isUnsuppportedNicQueue2Irq(nicInfo *NicBasicInfo) bool {
-
+	return strings.HasPrefix(nicInfo.Driver, MlxSF) ||
+		strings.HasPrefix(nicInfo.Driver, ByteNic) ||
+		strings.HasPrefix(nicInfo.Driver, Xsc)
 }
 
 // GetNicQueue2IrqWithQueueFilter get the queue to irq map with queue filter
@@ -682,10 +690,6 @@ func GetNicQueue2IrqWithQueueFilter(nicInfo *NicBasicInfo, queueFilters []string
 
 // GetNicQueue2Irq get nic queue naming in /proc/interrrupts
 func GetNicQueue2Irq(nicInfo *NicBasicInfo) (map[int]int, map[int]int, error) {
-	if isUnsuppportedNicQueue2Irq(nicInfo) {
-		return nil, nil, ErrUnsupportedNicIrq2Queue
-	}
-
 	if nicInfo.IsVirtioNetDev {
 		queueFilter := fmt.Sprintf("%s-input", nicInfo.VirtioNetName)
 		queueDelimeter := "."
@@ -755,6 +759,10 @@ func GetNicQueue2Irq(nicInfo *NicBasicInfo) (map[int]int, map[int]int, error) {
 		if len(queue2Irq) == nicInfo.QueueNum {
 			return queue2Irq, txQueue2Irq, nil
 		}
+	}
+
+	if isUnsuppportedNicQueue2Irq(nicInfo) {
+		return nil, nil, ErrUnsupportedNicIrq2Queue
 	}
 
 	return nil, nil, fmt.Errorf("failed to find matched queue in %s for %d: %s", InterruptsFile, nicInfo.IfIndex, nicInfo.Name)
