@@ -1534,8 +1534,8 @@ func GetNicRxQueuePackets(nic *NicBasicInfo) (map[int]uint64, error) {
 		!strings.HasPrefix(driver, NicDriverBNX) &&
 		!strings.HasPrefix(driver, NicDriverVirtioNet) &&
 		!strings.HasPrefix(driver, NicDriverI40E) &&
-		strings.HasPrefix(driver, NicDriverIXGBE) {
-		return nil, fmt.Errorf("unknow driver: %s", driver)
+		!strings.HasPrefix(driver, NicDriverIXGBE) {
+		return nil, fmt.Errorf("unknown driver: %s", driver)
 	}
 
 	nsc, err := netnsEnter(nic.NetNSInfo)
