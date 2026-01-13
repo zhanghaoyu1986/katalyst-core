@@ -2269,6 +2269,7 @@ func (ic *IrqTuningController) syncNics() ([]*machine.NicBasicInfo, bool, error)
 
 	nics, err := listHostActiveUplinkNics(ic.agentConf.MachineInfoConfiguration.NetNSDirAbsPath)
 	if err != nil {
+		ic.emitErrMetric(irqtuner.ListHostActiveUplinkNicsFailed, irqtuner.IrqTuningFatal)
 		return nil, false, err
 	}
 	ic.LastNicSyncTime = time.Now()
@@ -5899,7 +5900,6 @@ func (ic *IrqTuningController) periodicTuning(oldConf *config.IrqTuningConfig) {
 		nics, nicsChanged, err = ic.syncNics()
 		if err != nil {
 			general.Errorf("%s failed to syncNics, err %v", IrqTuningLogPrefix, err)
-			ic.emitErrMetric(irqtuner.SyncNicFailed, irqtuner.IrqTuningFatal)
 			return
 		}
 	}
