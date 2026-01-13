@@ -80,11 +80,11 @@ const (
 	SoftIrqsFile       = "/proc/softirqs"
 )
 
-const (
-	MlxSF   = "mlx5_core.sf"
-	ByteNic = "bytenic"
-	Xsc     = "xsc"
-)
+var unsupportedQueue2IrqDrivers = []string{
+	"mlx5_core.sf",
+	"bytenic",
+	"xsc",
+}
 
 var ErrUnsupportedNicIrq2Queue = errors.New("unsupported nic irq to queue mapping")
 
@@ -540,10 +540,17 @@ func GetNicTxQueuesXpsConf(nic *NicBasicInfo) (map[int]string, error) {
 	return txQueuesXpsConf, nil
 }
 
-func isUnsuppportedNicQueue2Irq(nicInfo *NicBasicInfo) bool {
-	return strings.HasPrefix(nicInfo.Driver, MlxSF) ||
-		strings.HasPrefix(nicInfo.Driver, ByteNic) ||
-		strings.HasPrefix(nicInfo.Driver, Xsc)
+func isUnsupportedNicQueue2Irq(nic *NicBasicInfo) bool {
+	if nic == nil {
+		return false
+	}
+
+	for _, drv := range unsupportedQueue2IrqDrivers {
+		if strings.HasPrefix(nic.Driver, drv) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetNicQueue2IrqWithQueueFilter get the queue to irq map with queue filter
@@ -761,7 +768,7 @@ func GetNicQueue2Irq(nicInfo *NicBasicInfo) (map[int]int, map[int]int, error) {
 		}
 	}
 
-	if isUnsuppportedNicQueue2Irq(nicInfo) {
+	if isUnsupportedNicQueue2Irq(nicInfo) {
 		return nil, nil, ErrUnsupportedNicIrq2Queue
 	}
 
