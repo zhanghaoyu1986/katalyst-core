@@ -99,3 +99,7 @@ func (f *FakeCgroupManager) GetPids(absCgroupPath string) ([]string, error) {
 func (f *FakeCgroupManager) GetTasks(absCgroupPath string) ([]string, error) {
 	return nil, nil
 }
+
+func (f *FakeCgroupManager) SetOomPriority(absCgroupPath string, prio int) error {
+	return nil
+}

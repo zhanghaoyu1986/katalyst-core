@@ -585,3 +585,7 @@ func GetEffectiveCPUSetWithAbsolutePath(absCgroupPath string) (machine.CPUSet, m
 	}
 	return cpus, mems, nil
 }
+
+func SetOomPriorityWithAbsolutePath(absCgroupPath string, prio int) error {
+	return GetManager().SetOomPriority(absCgroupPath, prio)
+}

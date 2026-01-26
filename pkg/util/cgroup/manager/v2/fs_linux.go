@@ -850,3 +850,13 @@ lineLoop:
 
 	return devID, ioCostModelData, nil
 }
+
+func (m *manager) SetOomPriority(absCgroupPath string, prio int) error {
+	if err, applied, oldData := common.InstrumentedWriteFileIfChange(absCgroupPath, "memory.oom.priority", strconv.Itoa(prio)); err != nil {
+		return err
+	} else if applied {
+		klog.Infof("[CgroupV2] set oom priority successfully, cgroupPath: %s, data: %d, old data: %s\n", absCgroupPath, prio, oldData)
+	}
+
+	return nil
+}

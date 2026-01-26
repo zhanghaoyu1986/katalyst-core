@@ -269,3 +269,93 @@ func parseInterrupts(r io.Reader) (procfs.Interrupts, error) {
 
 	return interrupts, scanner.Err()
 }
+
+func (m *manager) setOomPriority(val int) error {
+	dir := "/proc/sys/vm"
+	file := "memcg_oom_priority_enable"
+	valStr := strconv.Itoa(val)
+
+	if err, applied, oldVal := common.InstrumentedWriteFileIfChange(dir, file, valStr); err != nil {
+		return err
+	} else if applied {
+		general.Infof("[Procfs] enable/disable oom priorty successfully, val: %s, oldVal %s\n", valStr, oldVal)
+	}
+
+	return nil
+}
+
+// EnableOomPriority enable oom priority feature
+func (m *manager) EnableOomPriority() error {
+	return m.setOomPriority(1)
+}
+
+// EnableOomPriority enable oom priority feature
+func (m *manager) DisableOomPriority() error {
+	return m.setOomPriority(0)
+}
+
+// EnableOomPriority enable oom priority feature
+func (m *manager) SetLowPrioWatermarkRatio(ratio int) error {
+	dir := "/proc/sys/vm"
+	file := "memcg_oom_priority_watermark_ratio"
+	valStr := strconv.Itoa(ratio)
+
+	if err, applied, oldVal := common.InstrumentedWriteFileIfChange(dir, file, valStr); err != nil {
+		return err
+	} else if applied {
+		general.Infof("[Procfs] set low priority watermark ratio successfully, val: %s, oldVal %s\n", valStr, oldVal)
+	}
+
+	return nil
+}
+
+func (m *manager) IsSwapOn() (bool, error) {
+	lines, err := general.ReadLines("/proc/swaps")
+	if err != nil {
+		return false, err
+	}
+
+	headerLine := true
+	lineColsNum := 0
+	usedColIndex := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		cols := strings.Fields(line)
+
+		if headerLine {
+			headerLine = false
+			lineColsNum = len(cols)
+			for i, col := range cols {
+				if col == "Used" {
+					usedColIndex = i
+					break
+				}
+			}
+
+			if usedColIndex == -1 {
+				return false, fmt.Errorf("failed to find \"Used\" col in header line \"%s\" in /proc/swaps", line)
+			}
+
+			continue
+		}
+
+		if len(cols) != lineColsNum {
+			general.Errorf("invalid line with not %d fields in /proc/swaps", lineColsNum)
+			continue
+		}
+
+		used, err := strconv.ParseUint(cols[usedColIndex], 10, 64)
+		if err != nil {
+			general.Errorf("invalid used value: %s in /proc/swaps", cols[usedColIndex])
+			continue
+		}
+		if used > 0 {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
