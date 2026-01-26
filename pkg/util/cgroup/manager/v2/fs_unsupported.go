@@ -111,3 +111,7 @@ func (m *unsupportedManager) GetPids(_ string) ([]string, error) {
 func (m *unsupportedManager) GetTasks(_ string) ([]string, error) {
 	return nil, fmt.Errorf("unsupported manager v2")
 }
+
+func (m *unsupportedManager) SetOomPriority(absCgroupPath string, prio int) error {
+	return fmt.Errorf("unsupported manager v2")
+}

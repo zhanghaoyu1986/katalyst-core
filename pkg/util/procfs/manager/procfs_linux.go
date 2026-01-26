@@ -269,3 +269,42 @@ func parseInterrupts(r io.Reader) (procfs.Interrupts, error) {
 
 	return interrupts, scanner.Err()
 }
+
+func (m *manager) setOomPriority(val int) error {
+	dir := "/proc/sys/vm"
+	file := "memcg_oom_priority_enable"
+	valStr := strconv.Itoa(val)
+
+	if err, applied, oldVal := common.InstrumentedWriteFileIfChange(dir, file, valStr); err != nil {
+		return err
+	} else if applied {
+		general.Infof("[Procfs] enable/disable oom priorty successfully, val: %s, oldVal %s\n", valStr, oldVal)
+	}
+
+	return nil
+}
+
+// EnableOomPriority enable oom priority feature
+func (m *manager) EnableOomPriority() error {
+	return m.setOomPriority(1)
+}
+
+// EnableOomPriority enable oom priority feature
+func (m *manager) DisableOomPriority() error {
+	return m.setOomPriority(0)
+}
+
+// EnableOomPriority enable oom priority feature
+func (m *manager) SetLowPrioWatermarkRatio(ratio int) error {
+	dir := "/proc/sys/vm"
+	file := "memcg_oom_priority_watermark_ratio"
+	valStr := strconv.Itoa(ratio)
+
+	if err, applied, oldVal := common.InstrumentedWriteFileIfChange(dir, file, valStr); err != nil {
+		return err
+	} else if applied {
+		general.Infof("[Procfs] set low priority watermark ratio successfully, val: %s, oldVal %s\n", valStr, oldVal)
+	}
+
+	return nil
+}

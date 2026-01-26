@@ -161,3 +161,18 @@ func GetTaskSchedWait(pids []int) (map[int]uint64, error) {
 func ApplyProcInterrupts(irqNumber int, cpuset string) error {
 	return GetProcFSManager().ApplyProcInterrupts(irqNumber, cpuset)
 }
+
+// EnableOomPriority enable oom priority feature
+func EnableOomPriority() error {
+	return GetProcFSManager().EnableOomPriority()
+}
+
+// DisableOomPriority disable oom priority feature
+func DisableOomPriority() error {
+	return GetProcFSManager().DisableOomPriority()
+}
+
+// SetLowPrioWatermarkRatio set low priority watermark ratio
+func SetLowPrioWatermarkRatio(ratio int) error {
+	return GetProcFSManager().SetLowPrioWatermarkRatio(ratio)
+}

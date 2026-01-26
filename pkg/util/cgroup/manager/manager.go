@@ -56,6 +56,8 @@ type Manager interface {
 
 	GetPids(absCgroupPath string) ([]string, error)
 	GetTasks(absCgroupPath string) ([]string, error)
+
+	SetOomPriority(absCgroupPath string, prio int) error
 }
 
 // GetManager returns a cgroup instance for both v1/v2 version

@@ -52,6 +52,9 @@ type ProcFSManager interface {
 	GetSchedStat() (*procfs.Schedstat, error)
 
 	ApplyProcInterrupts(irqNumber int, cpuset string) error
+	EnableOomPriority() error
+	DisableOomPriority() error
+	SetLowPrioWatermarkRatio(ratio int) error
 }
 
 // GetProcFSManager returns the singleton ProcFSManager.

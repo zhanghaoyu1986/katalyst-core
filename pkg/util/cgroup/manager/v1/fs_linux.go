@@ -452,3 +452,7 @@ func newHierarchy(enabled map[cgroups.Name]struct{}) cgroups.Hierarchy {
 		return subsystems, nil
 	}
 }
+
+func (m *manager) SetOomPriority(absCgroupPath string, prio int) error {
+	return fmt.Errorf("cgroupv1 does not support oom priority feature")
+}
