@@ -992,13 +992,16 @@ func listHostActiveUplinkNics(netNSDir string) ([]*machine.NicBasicInfo, error) 
 	var nics []*machine.NicBasicInfo
 	for _, nic := range tmpNics {
 		if len(nic.Queue2Irq) == 0 {
-			general.Warningf("%s nic %s has empty Queue2Irq", IrqTuningLogPrefix, nic)
+			general.Warningf("%s nic %s with driver %s has empty Queue2Irq", IrqTuningLogPrefix, nic, nic.Driver)
 			continue
 		}
 		nics = append(nics, nic)
 	}
 
 	if len(nics) == 0 {
+		if len(tmpNics) > 0 {
+			return nil, machine.ErrUnsupportedNicIrq2Queue
+		}
 		return nil, fmt.Errorf("no active uplink nics, it's impossible")
 	}
 
@@ -2269,7 +2272,9 @@ func (ic *IrqTuningController) syncNics() ([]*machine.NicBasicInfo, bool, error)
 
 	nics, err := listHostActiveUplinkNics(ic.agentConf.MachineInfoConfiguration.NetNSDirAbsPath)
 	if err != nil {
-		ic.emitErrMetric(irqtuner.ListHostActiveUplinkNicsFailed, irqtuner.IrqTuningFatal)
+		if err != machine.ErrUnsupportedNicIrq2Queue {
+			ic.emitErrMetric(irqtuner.ListHostActiveUplinkNicsFailed, irqtuner.IrqTuningFatal)
+		}
 		return nil, false, err
 	}
 	ic.LastNicSyncTime = time.Now()
