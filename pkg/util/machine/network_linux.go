@@ -637,7 +637,7 @@ func isUnsupportedNicQueue2Irq(nic *NicBasicInfo) bool {
 // GetNicQueue2IrqWithQueueFilter get the queue to irq map with queue filter
 // the "same" queue may match multiple irqs, e.g., nics with the same name from different netns and sriov vfs
 // queueFilters can not be empty.
-func GetNicQueue2IrqWithQueueFilter(nicInfo *NicBasicInfo, queueFilters []string, queueDelimeter string) (map[int]int, error) {
+func GetNicQueue2IrqWithQueueFilter(nicInfo *NicBasicInfo, queueFilters []string, queueDelimeter string, queueNumCheck bool) (map[int]int, error) {
 	nicAllIrqs := make(map[int]interface{})
 	for _, irq := range nicInfo.Irqs {
 		nicAllIrqs[irq] = nil
@@ -721,7 +721,7 @@ func GetNicQueue2IrqWithQueueFilter(nicInfo *NicBasicInfo, queueFilters []string
 			}
 		}
 		if findQueue >= 0 {
-			if findQueue >= nicInfo.QueueNum {
+			if queueNumCheck && findQueue >= nicInfo.QueueNum {
 				klog.Errorf("%s: %d: %s queue %d greater than queue num %d", nicInfo.NSName, nicInfo.IfIndex, nicInfo.Name, findQueue, nicInfo.QueueNum)
 				continue
 			}
@@ -756,7 +756,7 @@ func GetNicQueue2IrqWithQueueFilter(nicInfo *NicBasicInfo, queueFilters []string
 				continue
 			}
 
-			if queue >= nicInfo.QueueNum {
+			if queueNumCheck && queue >= nicInfo.QueueNum {
 				klog.Errorf("%s: %d: %s queue %d greater than queue num %d", nicInfo.NSName, nicInfo.IfIndex, nicInfo.Name, queue, nicInfo.QueueNum)
 				continue
 			}
@@ -769,7 +769,7 @@ func GetNicQueue2IrqWithQueueFilter(nicInfo *NicBasicInfo, queueFilters []string
 		}
 	}
 
-	if len(queue2Irq) > 0 && len(queue2Irq) != nicInfo.QueueNum {
+	if queueNumCheck && len(queue2Irq) > 0 && len(queue2Irq) != nicInfo.QueueNum {
 		return nil, fmt.Errorf("%s: %d: %s queue2Irq length %d is NOT equal to queue num %d", nicInfo.NSName, nicInfo.IfIndex, nicInfo.Name, len(queue2Irq), nicInfo.QueueNum)
 	}
 
@@ -786,7 +786,7 @@ func GetNicQueue2Irq(nicInfo *NicBasicInfo) (map[int]int, map[int]int, error) {
 		queueFilter := fmt.Sprintf("%s-input", nicInfo.VirtioNetName)
 		queueDelimeter := "."
 
-		queue2Irq, err := GetNicQueue2IrqWithQueueFilter(nicInfo, []string{queueFilter}, queueDelimeter)
+		queue2Irq, err := GetNicQueue2IrqWithQueueFilter(nicInfo, []string{queueFilter}, queueDelimeter, true)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to GetNicQueue2IrqWithQueueFilter(%s, %s), err %v", queueFilter, queueDelimeter, err)
 		}
@@ -796,7 +796,7 @@ func GetNicQueue2Irq(nicInfo *NicBasicInfo) (map[int]int, map[int]int, error) {
 		}
 
 		queueFilter = fmt.Sprintf("%s-output", nicInfo.VirtioNetName)
-		txQueue2Irq, err := GetNicQueue2IrqWithQueueFilter(nicInfo, []string{queueFilter}, queueDelimeter)
+		txQueue2Irq, err := GetNicQueue2IrqWithQueueFilter(nicInfo, []string{queueFilter}, queueDelimeter, true)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to GetNicQueue2IrqWithQueueFilter(%s, %s), err %v", queueFilter, queueDelimeter, err)
 		}
@@ -812,7 +812,7 @@ func GetNicQueue2Irq(nicInfo *NicBasicInfo) (map[int]int, map[int]int, error) {
 	queueFilter := nicInfo.Name
 	queueDelimeter := "-"
 
-	queue2Irq, err := GetNicQueue2IrqWithQueueFilter(nicInfo, []string{queueFilter}, queueDelimeter)
+	queue2Irq, err := GetNicQueue2IrqWithQueueFilter(nicInfo, []string{queueFilter}, queueDelimeter, true)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to GetNicQueue2IrqWithQueueFilter(%s, %s), err %v", queueFilter, queueDelimeter, err)
 	}
@@ -827,7 +827,7 @@ func GetNicQueue2Irq(nicInfo *NicBasicInfo) (map[int]int, map[int]int, error) {
 		queueFilters := []string{nicInfo.PCIAddr, "comp"}
 		queueDelimeter = "@"
 
-		queue2Irq, err := GetNicQueue2IrqWithQueueFilter(nicInfo, queueFilters, queueDelimeter)
+		queue2Irq, err := GetNicQueue2IrqWithQueueFilter(nicInfo, queueFilters, queueDelimeter, true)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to GetNicQueue2IrqWithQueueFilter(%s, %+v), err %v", queueFilters, queueDelimeter, err)
 		}
@@ -843,7 +843,7 @@ func GetNicQueue2Irq(nicInfo *NicBasicInfo) (map[int]int, map[int]int, error) {
 		queueFilter = cols[0]
 		queueDelimeter = "-"
 
-		queue2Irq, err := GetNicQueue2IrqWithQueueFilter(nicInfo, []string{queueFilter}, queueDelimeter)
+		queue2Irq, err := GetNicQueue2IrqWithQueueFilter(nicInfo, []string{queueFilter}, queueDelimeter, true)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to GetNicQueue2IrqWithQueueFilter(%s, %s), err %v", queueFilter, queueDelimeter, err)
 		}
