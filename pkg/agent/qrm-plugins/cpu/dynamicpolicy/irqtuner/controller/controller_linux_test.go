@@ -25,12 +25,169 @@ import (
 	"testing"
 
 	. "github.com/bytedance/mockey"
+	"github.com/klauspost/cpuid/v2"
+	"github.com/kubewharf/katalyst-api/pkg/apis/config/v1alpha1"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
 
+	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/cpu/dynamicpolicy/irqtuner"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/cpu/dynamicpolicy/irqtuner/config"
+	"github.com/kubewharf/katalyst-core/pkg/config/agent"
 	"github.com/kubewharf/katalyst-core/pkg/metrics"
 	"github.com/kubewharf/katalyst-core/pkg/util/machine"
 )
+
+type recordingMetricsEmitter struct {
+	metrics.DummyMetrics
+	records []metricRecord
+}
+
+type metricRecord struct {
+	key  string
+	val  int64
+	tags []metrics.MetricTag
+}
+
+func (e *recordingMetricsEmitter) StoreInt64(key string, val int64, _ metrics.MetricTypeName, tags ...metrics.MetricTag) error {
+	e.records = append(e.records, metricRecord{key: key, val: val, tags: tags})
+	return nil
+}
+
+func TestFallbackUnsupportedIrqTuningPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		policy    config.IrqTuningPolicy
+		effective config.IrqTuningPolicy
+		fallback  bool
+	}{
+		{
+			name:      "auto",
+			policy:    config.IrqTuningAuto,
+			effective: config.IrqTuningBalanceFair,
+			fallback:  true,
+		},
+		{
+			name:      "exclusive",
+			policy:    config.IrqTuningIrqCoresExclusive,
+			effective: config.IrqTuningBalanceFair,
+			fallback:  true,
+		},
+		{
+			name:      "balance",
+			policy:    config.IrqTuningBalanceFair,
+			effective: config.IrqTuningBalanceFair,
+			fallback:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			conf := config.NewConfiguration()
+			conf.EnableIrqTuning = true
+			conf.IrqTuningPolicy = tt.policy
+
+			requested, fallback := fallbackUnsupportedIrqTuningPolicy(conf)
+
+			assert.Equal(t, tt.policy, requested)
+			assert.Equal(t, tt.fallback, fallback)
+			assert.True(t, conf.EnableIrqTuning)
+			assert.Equal(t, tt.effective, conf.IrqTuningPolicy)
+		})
+	}
+}
+
+func TestSyncDynamicConfigFallsBackUnsupportedPolicy(t *testing.T) {
+	agentConf := agent.NewAgentConfiguration()
+	agentConf.GetDynamicConfiguration().IRQTuningConfiguration.EnableTuner = true
+	agentConf.GetDynamicConfiguration().IRQTuningConfiguration.TuningPolicy =
+		v1alpha1.TuningPolicyExclusive
+	emitter := &recordingMetricsEmitter{}
+
+	controller := &IrqTuningController{
+		agentConf: agentConf,
+		conf:      config.NewConfiguration(),
+		emitter:   emitter,
+	}
+
+	controller.syncDynamicConfig()
+
+	assert.True(t, controller.conf.EnableIrqTuning)
+	assert.Equal(t, config.IrqTuningBalanceFair, controller.conf.IrqTuningPolicy)
+	assert.Len(t, emitter.records, 1)
+	assert.Equal(t, irqtuner.UnsupportedIrqTuningPolicyFallback, emitter.records[0].tags[0].Val)
+}
+
+func TestUseCCDBalance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		vendor   cpuid.Vendor
+		expected bool
+	}{
+		{
+			name:     "AMD uses CCD",
+			vendor:   cpuid.AMD,
+			expected: true,
+		},
+		{
+			name:     "Intel uses NUMA",
+			vendor:   cpuid.Intel,
+			expected: false,
+		},
+		{
+			name:     "arm64 unknown vendor uses NUMA",
+			vendor:   cpuid.VendorUnknown,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, useCCDBalance(tt.vendor))
+		})
+	}
+}
+
+func TestIrqTuningControllerStringWithNUMA(t *testing.T) {
+	t.Parallel()
+
+	controller := &IrqTuningController{
+		CPUInfo: &machine.CPUInfo{
+			CPUVendor: cpuid.Intel,
+			Sockets: map[int]*machine.CPUSocket{
+				2: {
+					NumaIDs: []int{3},
+					CPUs:    []int64{4, 5},
+					Numas: map[int]*machine.LLCDomain{
+						3: {
+							PhyCores: []machine.PhyCore{
+								{CPUs: []int64{4}},
+								{CPUs: []int64{5}},
+							},
+						},
+					},
+				},
+			},
+			CPU2Socket: map[int64]int{4: 2, 5: 2},
+			CPUOnline:  map[int64]bool{4: true, 5: true},
+		},
+	}
+
+	output := controller.String()
+
+	assert.Contains(t, output, "Sockets[2]:")
+	assert.Contains(t, output, "Numas:")
+	assert.Contains(t, output, "Numas[3]:")
+	assert.Contains(t, output, "CPUs: [4]")
+	assert.Contains(t, output, "CPUs: [5]")
+}
 
 func Test_controller_linux(t *testing.T) {
 	t.Parallel()

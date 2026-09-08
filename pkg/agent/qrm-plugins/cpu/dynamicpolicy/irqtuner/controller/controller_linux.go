@@ -482,6 +482,20 @@ type IrqTuningController struct {
 	IrqAffinityChanges map[int]*IrqAffinityChange // nic ifindex as map key. used to record irq affinity changes in each periodicTuning, and will be reset at the beginning of periodicTuning
 }
 
+func fallbackUnsupportedIrqTuningPolicy(conf *config.IrqTuningConfig) (config.IrqTuningPolicy, bool) {
+	requestedPolicy := conf.IrqTuningPolicy
+	if conf.IrqTuningPolicy == config.IrqTuningAuto ||
+		conf.IrqTuningPolicy == config.IrqTuningIrqCoresExclusive {
+		conf.IrqTuningPolicy = config.IrqTuningBalanceFair
+		return requestedPolicy, true
+	}
+	return requestedPolicy, false
+}
+
+func useCCDBalance(vendor cpuid.Vendor) bool {
+	return vendor == cpuid.AMD
+}
+
 func NewNicIrqTuningManager(conf *config.IrqTuningConfig, nic *machine.NicBasicInfo, assignedSockets []int, order ExclusiveIrqCoresSelectOrder) (*NicIrqTuningManager, error) {
 	nicInfo, err := GetNicInfo(nic)
 	if err != nil {
@@ -585,12 +599,20 @@ func NewIrqTuningController(agentConf *agent.AgentConfiguration, irqStateAdapter
 		general.Errorf("%s GetDynamicConfiguration return nil", IrqTuningLogPrefix)
 	}
 	conf := config.ConvertDynamicConfigToIrqTuningConfig(dynConf)
-
 	cpuInfo := machineInfo.CPUTopology.CPUInfo
+	requestedPolicy, fallback := fallbackUnsupportedIrqTuningPolicy(conf)
+	if fallback {
+		general.Errorf("%s irq tuning policy %s is unsupported, fallback to %s",
+			IrqTuningLogPrefix, requestedPolicy, conf.IrqTuningPolicy)
+		_ = emitter.StoreInt64(metricUtil.MetricNameIrqTuningErr, irqtuner.IrqTuningError, metrics.MetricTypeNameRaw,
+			metrics.MetricTag{Key: "reason", Val: irqtuner.UnsupportedIrqTuningPolicyFallback},
+			metrics.MetricTag{Key: "requested_policy", Val: string(requestedPolicy)},
+			metrics.MetricTag{Key: "effective_policy", Val: string(conf.IrqTuningPolicy)})
+	}
 
 	if cpuInfo == nil {
 		if cpuid.CPU.VendorID != cpuid.Intel && cpuid.CPU.VendorID != cpuid.AMD {
-			general.Infof("%s unsupported cpu arch: %s", IrqTuningLogPrefix, cpuInfo.CPUVendor)
+			general.Infof("%s unsupported cpu vendor %s", IrqTuningLogPrefix, cpuid.CPU.VendorID)
 			return nil, nil
 		}
 		retErr = fmt.Errorf("machineInfo.CPUTopology.CPUInfo is nil")
@@ -1412,28 +1434,32 @@ func (ic *IrqTuningController) String() string {
 		msg = fmt.Sprintf("%s%s    CPUVendor: %s\n", msg, indent, ic.CPUInfo.CPUVendor)
 
 		msg = fmt.Sprintf("%s%s    Sockets:\n", msg, indent)
-		for i := 0; i < len(ic.CPUInfo.Sockets); i++ {
-			socket := ic.CPUInfo.Sockets[i]
+		for _, socketID := range ic.CPUInfo.GetSocketSlice() {
+			socket := ic.CPUInfo.Sockets[socketID]
 			indent = spaces + spaces
-			msg = fmt.Sprintf("%s%s    Sockets[%d]:\n", msg, indent, i)
+			msg = fmt.Sprintf("%s%s    Sockets[%d]:\n", msg, indent, socketID)
 
 			indent = spaces + spaces + spaces
 			msg = fmt.Sprintf("%s%s    NumaIDs: %+v\n", msg, indent, socket.NumaIDs)
 			msg = fmt.Sprintf("%s%s    CPUs: %+v\n", msg, indent, socket.CPUs)
 
-			if ic.CPUInfo.CPUVendor == cpuid.Intel {
-				msg = fmt.Sprintf("%s%s    IntelNumas:\n", msg, indent)
-				for _, j := range socket.NumaIDs {
-					numa := socket.IntelNumas[j]
+			if socket.Numas != nil {
+				msg = fmt.Sprintf("%s%s    Numas:\n", msg, indent)
+				for _, numaID := range socket.NumaIDs {
+					numa := socket.Numas[numaID]
+					if numa == nil {
+						continue
+					}
+
 					indent = spaces + spaces + spaces + spaces
-					msg = fmt.Sprintf("%s%s    IntelNumas[%d]:\n", msg, indent, j)
+					msg = fmt.Sprintf("%s%s    Numas[%d]:\n", msg, indent, numaID)
 
 					indent = spaces + spaces + spaces + spaces + spaces
 					for _, phyCore := range numa.PhyCores {
 						msg = fmt.Sprintf("%s%s    CPUs: %+v\n", msg, indent, phyCore.CPUs)
 					}
 				}
-			} else if ic.CPUInfo.CPUVendor == cpuid.AMD {
+			} else if socket.AMDNumas != nil {
 				msg = fmt.Sprintf("%s%s    AMDNumas:\n", msg, indent)
 				for _, j := range socket.NumaIDs {
 					numa := socket.AMDNumas[j]
@@ -3112,13 +3138,7 @@ func (ic *IrqTuningController) tuneNicIrqsAffinityCCDsFairly(nic *NicInfo, irqs 
 }
 
 func (ic *IrqTuningController) tuneNicIrqsAffinityLLCDomainsFairly(nic *NicInfo, assignedSockets []int) error {
-	if ic.CPUInfo.CPUVendor == cpuid.Intel {
-		return ic.tuneNicIrqsAffinityNumasFairly(nic, assignedSockets, false)
-	} else if ic.CPUInfo.CPUVendor == cpuid.AMD {
-		return ic.tuneNicIrqsAffinityNumasFairly(nic, assignedSockets, true)
-	} else {
-		return fmt.Errorf("unsupport cpu arch: %s", ic.CPUInfo.CPUVendor)
-	}
+	return ic.tuneNicIrqsAffinityNumasFairly(nic, assignedSockets, useCCDBalance(ic.CPUInfo.CPUVendor))
 }
 
 func (ic *IrqTuningController) tuneNicIrqsAffinityFairly(nic *NicInfo, assignedSockets []int) error {
@@ -3356,13 +3376,10 @@ func (ic *IrqTuningController) balanceNicIrqsInCCDFairly(nic *NicInfo, assignedS
 }
 
 func (ic *IrqTuningController) balanceNicIrqsInLLCDomainFairly(nic *NicInfo, assignedSockets []int) error {
-	if ic.CPUInfo.CPUVendor == cpuid.Intel {
-		return ic.balanceNicIrqsInNumaFairly(nic, assignedSockets)
-	} else if ic.CPUInfo.CPUVendor == cpuid.AMD {
+	if useCCDBalance(ic.CPUInfo.CPUVendor) {
 		return ic.balanceNicIrqsInCCDFairly(nic, assignedSockets)
-	} else {
-		return fmt.Errorf("unsupport cpu arch: %s", ic.CPUInfo.CPUVendor)
 	}
+	return ic.balanceNicIrqsInNumaFairly(nic, assignedSockets)
 }
 
 func (ic *IrqTuningController) balanceNicIrqsFairly(nic *NicInfo, assignedSockets []int) error {
@@ -3976,7 +3993,7 @@ func (ic *IrqTuningController) selectExclusiveIrqCoresFromNuma(irqCoresNum int, 
 	}
 
 	var phyCores []machine.PhyCore
-	if ic.CPUInfo.CPUVendor == cpuid.AMD {
+	if socket.AMDNumas != nil {
 		numa, ok := socket.AMDNumas[numaID]
 		if !ok {
 			return nil, fmt.Errorf("invalid numa id %d", numaID)
@@ -3985,8 +4002,8 @@ func (ic *IrqTuningController) selectExclusiveIrqCoresFromNuma(irqCoresNum int, 
 		for _, ccd := range numa.CCDs {
 			phyCores = append(phyCores, ccd.PhyCores...)
 		}
-	} else if ic.CPUInfo.CPUVendor == cpuid.Intel {
-		numa, ok := socket.IntelNumas[numaID]
+	} else {
+		numa, ok := socket.Numas[numaID]
 		if !ok {
 			return nil, fmt.Errorf("invalid numa id %d", numaID)
 		}
@@ -5392,13 +5409,10 @@ func (ic *IrqTuningController) setRPSInCCDForNic(nic *NicIrqTuningManager, assig
 }
 
 func (ic *IrqTuningController) setRPSForNic(nic *NicIrqTuningManager) error {
-	if ic.CPUInfo.CPUVendor == cpuid.Intel {
-		return ic.setRPSInNumaForNic(nic, nic.AssignedSockets)
-	} else if ic.CPUInfo.CPUVendor == cpuid.AMD {
+	if useCCDBalance(ic.CPUInfo.CPUVendor) {
 		return ic.setRPSInCCDForNic(nic, nic.AssignedSockets)
-	} else {
-		return fmt.Errorf("unsupport cpu arch: %s", ic.CPUInfo.CPUVendor)
 	}
+	return ic.setRPSInNumaForNic(nic, nic.AssignedSockets)
 }
 
 func (ic *IrqTuningController) setRPSForNics(nics []*NicIrqTuningManager) error {
@@ -5839,7 +5853,18 @@ func (ic *IrqTuningController) syncDynamicConfig() {
 	}
 
 	conf := config.ConvertDynamicConfigToIrqTuningConfig(dynConf)
-	if !ic.conf.Equal(conf) {
+	requestedPolicy, fallback := fallbackUnsupportedIrqTuningPolicy(conf)
+	if fallback {
+		ic.emitErrMetric(irqtuner.UnsupportedIrqTuningPolicyFallback, irqtuner.IrqTuningError,
+			metrics.MetricTag{Key: "requested_policy", Val: string(requestedPolicy)},
+			metrics.MetricTag{Key: "effective_policy", Val: string(conf.IrqTuningPolicy)})
+	}
+	configChanged := ic.conf == nil || !ic.conf.Equal(conf)
+	if configChanged {
+		if fallback {
+			general.Errorf("%s irq tuning policy %s is unsupported, fallback to %s",
+				IrqTuningLogPrefix, requestedPolicy, conf.IrqTuningPolicy)
+		}
 		general.Infof("%s new config: %s", IrqTuningLogPrefix, conf)
 	}
 

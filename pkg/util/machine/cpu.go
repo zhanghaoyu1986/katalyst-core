@@ -193,10 +193,10 @@ type AMDNuma struct {
 }
 
 type CPUSocket struct {
-	NumaIDs    []int
-	CPUs       []int64
-	IntelNumas map[int]*LLCDomain // numa id as map key
-	AMDNumas   map[int]*AMDNuma   // numa id as map key
+	NumaIDs  []int
+	CPUs     []int64
+	Numas    map[int]*LLCDomain // numa id as map key
+	AMDNumas map[int]*AMDNuma   // numa id as map key
 }
 
 // CPUInfo is the cpu info, generally all cpus shown in below files are online, i.e. CPUInfo managed all CPUs are online,
@@ -209,6 +209,11 @@ type CPUInfo struct {
 	Sockets    map[int]*CPUSocket
 	CPU2Socket map[int64]int  // cpu id as map key, socket id as map value
 	CPUOnline  map[int64]bool // cpu id as map key, CPUOnline contains all online cpus, but not contains any offline cpu
+}
+
+type numaNodeCPUListFile struct {
+	nodeID      int
+	cpuListFile string
 }
 
 // CPUStat is the cpu stat info
@@ -346,7 +351,7 @@ func GetNumaPackageID(nodeID int) (int, error) {
 		return -1, fmt.Errorf("failed to GetCPUPackageID(%d), err %v", cpuList[0], err)
 	}
 
-	return phyPackageId, nil
+	return normalizePackageID(phyPackageId), nil
 }
 
 func GetCPUOnlineStatus(cpuID int64) (bool, error) {
@@ -425,7 +430,7 @@ func getLLCDomain(cpuListFile string) (*LLCDomain, error) {
 	return &llcDomain, nil
 }
 
-func getIntelNumaTopo(nodeCPUListFile string) (*LLCDomain, error) {
+func getNumaTopo(nodeCPUListFile string) (*LLCDomain, error) {
 	return getLLCDomain(nodeCPUListFile)
 }
 
@@ -464,18 +469,48 @@ func getAMDNumaTopo(nodeCPUListFile string) (*AMDNuma, error) {
 	return &numa, nil
 }
 
-func getSocketCPUList(socket *CPUSocket, cpuVendor cpuid.Vendor) []int64 {
+func addLLCDomainNuma(cpuInfo *CPUInfo, nodeID int, numa *LLCDomain) error {
+	if len(numa.PhyCores) == 0 || len(numa.PhyCores[0].CPUs) == 0 {
+		return nil
+	}
+
+	packageID, err := GetCPUPackageID(numa.PhyCores[0].CPUs[0])
+	if err != nil {
+		return fmt.Errorf("failed to GetCPUPackageID(%d), err %v", numa.PhyCores[0].CPUs[0], err)
+	}
+	packageID = normalizePackageID(packageID)
+
+	socket, ok := cpuInfo.Sockets[packageID]
+	if !ok {
+		socket = &CPUSocket{
+			Numas: make(map[int]*LLCDomain),
+		}
+		cpuInfo.Sockets[packageID] = socket
+	}
+
+	socket.Numas[nodeID] = numa
+	socket.NumaIDs = append(socket.NumaIDs, nodeID)
+	return nil
+}
+
+func getSocketCPUList(socket *CPUSocket) []int64 {
 	var cpuList []int64
-	if cpuVendor == cpuid.Intel {
+	if socket.Numas != nil {
 		for _, numaID := range socket.NumaIDs {
-			numa := socket.IntelNumas[numaID]
+			numa := socket.Numas[numaID]
+			if numa == nil {
+				continue
+			}
 			for _, phyCore := range numa.PhyCores {
 				cpuList = append(cpuList, phyCore.CPUs...)
 			}
 		}
-	} else if cpuVendor == cpuid.AMD {
+	} else if socket.AMDNumas != nil {
 		for _, numaID := range socket.NumaIDs {
 			numa := socket.AMDNumas[numaID]
+			if numa == nil {
+				continue
+			}
 			for _, ccd := range numa.CCDs {
 				for _, phyCore := range ccd.PhyCores {
 					cpuList = append(cpuList, phyCore.CPUs...)
@@ -498,56 +533,35 @@ func GetCPUInfoWithTopo() (*CPUInfo, error) {
 		CPUOnline:  make(map[int64]bool),
 	}
 
-	// TODO: arm will be supported in the future
-	if cpuInfo.CPUVendor != cpuid.Intel && cpuInfo.CPUVendor != cpuid.AMD {
-		general.Infof("unsupported cpu arch: %s", cpuInfo.CPUVendor)
+	architecture, err := getMachineArchitecture()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get machine architecture, err %v", err)
+	}
+	if architecture != "arm64" && cpuInfo.CPUVendor != cpuid.Intel && cpuInfo.CPUVendor != cpuid.AMD {
+		general.Infof("unsupported cpu vendor %s on architecture %s", cpuInfo.CPUVendor, architecture)
 		return nil, nil
 	}
 
-	dirEnts, err := os.ReadDir(nodeSysDir)
+	nodeCPUListFiles, err := getNUMANodeCPUListFiles()
 	if err != nil {
-		return nil, fmt.Errorf("failed to ReadDir(%s), err %v", nodeSysDir, err)
+		return nil, err
 	}
 
-	for _, d := range dirEnts {
-		if !d.IsDir() {
-			continue
-		}
-
-		if !strings.HasPrefix(d.Name(), "node") {
-			continue
-		}
-
-		nodeID, err := strconv.Atoi(strings.TrimPrefix(d.Name(), "node"))
-		if err != nil {
-			continue
-		}
-
-		nodeCPUListFile := filepath.Join(nodeSysDir, d.Name(), "cpulist")
+	for _, nodeCPUList := range nodeCPUListFiles {
+		nodeID := nodeCPUList.nodeID
+		nodeCPUListFile := nodeCPUList.cpuListFile
 		if _, err := os.Stat(nodeCPUListFile); err != nil && os.IsNotExist(err) {
 			return nil, fmt.Errorf("%s not exists", nodeCPUListFile)
 		}
 
-		if cpuInfo.CPUVendor == cpuid.Intel {
-			numa, err := getIntelNumaTopo(nodeCPUListFile)
+		if architecture == "arm64" || cpuInfo.CPUVendor == cpuid.Intel {
+			numa, err := getNumaTopo(nodeCPUListFile)
 			if err != nil {
-				return nil, fmt.Errorf("getIntelNumaTopo(%d), err %v", nodeID, err)
+				return nil, fmt.Errorf("getNumaTopo(%d), err %v", nodeID, err)
 			}
-			if len(numa.PhyCores) > 0 && len(numa.PhyCores[0].CPUs) > 0 {
-				phyPackageId, err := GetCPUPackageID(numa.PhyCores[0].CPUs[0])
-				if err != nil {
-					return nil, fmt.Errorf("failed to GetCPUPackageID(%d), err %v", numa.PhyCores[0].CPUs[0], err)
-				}
-				if _, ok := cpuInfo.Sockets[phyPackageId]; !ok {
-					cpuInfo.Sockets[phyPackageId] = &CPUSocket{
-						IntelNumas: make(map[int]*LLCDomain),
-					}
-				}
-				socket := cpuInfo.Sockets[phyPackageId]
-				socket.IntelNumas[nodeID] = numa
-				socket.NumaIDs = append(socket.NumaIDs, nodeID)
+			if err := addLLCDomainNuma(cpuInfo, nodeID, numa); err != nil {
+				return nil, err
 			}
-
 		} else if cpuInfo.CPUVendor == cpuid.AMD {
 			numa, err := getAMDNumaTopo(nodeCPUListFile)
 			if err != nil {
@@ -559,6 +573,7 @@ func GetCPUInfoWithTopo() (*CPUInfo, error) {
 				if err != nil {
 					return nil, fmt.Errorf("failed to GetCPUPackageID(%d), err %v", numa.CCDs[0].PhyCores[0].CPUs[0], err)
 				}
+				phyPackageId = normalizePackageID(phyPackageId)
 				if _, ok := cpuInfo.Sockets[phyPackageId]; !ok {
 					cpuInfo.Sockets[phyPackageId] = &CPUSocket{
 						AMDNumas: make(map[int]*AMDNuma),
@@ -573,7 +588,7 @@ func GetCPUInfoWithTopo() (*CPUInfo, error) {
 
 	for socketID, socket := range cpuInfo.Sockets {
 		sort.Ints(socket.NumaIDs)
-		socketCPUList := getSocketCPUList(socket, cpuInfo.CPUVendor)
+		socketCPUList := getSocketCPUList(socket)
 		socket.CPUs = socketCPUList
 
 		for _, cpuID := range socketCPUList {
@@ -591,6 +606,59 @@ func GetCPUInfoWithTopo() (*CPUInfo, error) {
 	}
 
 	return cpuInfo, nil
+}
+
+func normalizeMachineArchitecture(machine string) string {
+	switch machine {
+	case "x86_64":
+		return "amd64"
+	case "aarch64":
+		return "arm64"
+	case "i386", "i486", "i586", "i686":
+		return "386"
+	default:
+		if strings.HasPrefix(machine, "armv") {
+			return "arm"
+		}
+		return machine
+	}
+}
+
+func getNUMANodeCPUListFiles() ([]numaNodeCPUListFile, error) {
+	dirEnts, err := os.ReadDir(nodeSysDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ReadDir(%s), err %v", nodeSysDir, err)
+	}
+
+	var files []numaNodeCPUListFile
+	for _, d := range dirEnts {
+		if !d.IsDir() || !strings.HasPrefix(d.Name(), "node") {
+			continue
+		}
+
+		nodeID, err := strconv.Atoi(strings.TrimPrefix(d.Name(), "node"))
+		if err != nil {
+			continue
+		}
+
+		files = append(files, numaNodeCPUListFile{
+			nodeID:      nodeID,
+			cpuListFile: filepath.Join(nodeSysDir, d.Name(), "cpulist"),
+		})
+	}
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no NUMA nodes found in %s", nodeSysDir)
+	}
+
+	return files, nil
+}
+
+func normalizePackageID(packageID int) int {
+	if packageID < 0 {
+		return 0
+	}
+	return packageID
 }
 
 func CollectCpuStats() (map[int64]*CPUStat, error) {
@@ -724,14 +792,15 @@ func getAMDSocketPhysicalCores(socket *CPUSocket) []PhyCore {
 	return phyCores
 }
 
-func getIntelSocketPhysicalCores(socket *CPUSocket) []PhyCore {
+func getNumaSocketPhysicalCores(socket *CPUSocket) []PhyCore {
 	var phyCores []PhyCore
 
 	// socket.NumaIDs is sorted by ascending order
 	for _, numaID := range socket.NumaIDs {
-		numa := socket.IntelNumas[numaID]
-		phyCores = append(phyCores, numa.PhyCores...)
-
+		numa := socket.Numas[numaID]
+		if numa != nil {
+			phyCores = append(phyCores, numa.PhyCores...)
+		}
 	}
 
 	return phyCores
@@ -749,17 +818,17 @@ func (c *CPUInfo) GetSocketSlice() []int {
 }
 
 func (c *CPUInfo) GetSocketPhysicalCores(socketID int) []PhyCore {
-	if socketID < 0 || socketID > len(c.Sockets) {
+	socket, ok := c.Sockets[socketID]
+	if socketID < 0 || !ok {
 		return nil
 	}
 
-	if c.CPUVendor == cpuid.AMD {
-		return getAMDSocketPhysicalCores(c.Sockets[socketID])
-	} else if c.CPUVendor == cpuid.Intel {
-		return getIntelSocketPhysicalCores(c.Sockets[socketID])
-	} else {
-		return nil
+	if socket.Numas != nil {
+		return getNumaSocketPhysicalCores(socket)
+	} else if socket.AMDNumas != nil {
+		return getAMDSocketPhysicalCores(socket)
 	}
+	return nil
 }
 
 func (c *CPUInfo) GetNodeCPUList(nodeID int) []int64 {
@@ -782,16 +851,20 @@ func (c *CPUInfo) GetNodeCPUList(nodeID int) []int64 {
 	}
 
 	var cpuList []int64
-	if c.CPUVendor == cpuid.Intel {
-		numa := socket.IntelNumas[nodeID]
-		for _, phyCore := range numa.PhyCores {
-			cpuList = append(cpuList, phyCore.CPUs...)
-		}
-	} else if c.CPUVendor == cpuid.AMD {
-		numa := socket.AMDNumas[nodeID]
-		for _, ccd := range numa.CCDs {
-			for _, phyCore := range ccd.PhyCores {
+	if socket.Numas != nil {
+		numa := socket.Numas[nodeID]
+		if numa != nil {
+			for _, phyCore := range numa.PhyCores {
 				cpuList = append(cpuList, phyCore.CPUs...)
+			}
+		}
+	} else if socket.AMDNumas != nil {
+		numa := socket.AMDNumas[nodeID]
+		if numa != nil {
+			for _, ccd := range numa.CCDs {
+				for _, phyCore := range ccd.PhyCores {
+					cpuList = append(cpuList, phyCore.CPUs...)
+				}
 			}
 		}
 	}
