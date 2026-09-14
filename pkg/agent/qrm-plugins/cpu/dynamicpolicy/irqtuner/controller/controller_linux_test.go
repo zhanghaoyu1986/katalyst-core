@@ -26,10 +26,10 @@ import (
 
 	. "github.com/bytedance/mockey"
 	"github.com/klauspost/cpuid/v2"
-	"github.com/kubewharf/katalyst-api/pkg/apis/config/v1alpha1"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/kubewharf/katalyst-api/pkg/apis/config/v1alpha1"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/cpu/dynamicpolicy/irqtuner"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/cpu/dynamicpolicy/irqtuner/config"
 	"github.com/kubewharf/katalyst-core/pkg/config/agent"
