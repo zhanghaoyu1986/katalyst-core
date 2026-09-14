@@ -103,8 +103,7 @@ func TestFallbackUnsupportedIrqTuningPolicy(t *testing.T) {
 func TestSyncDynamicConfigFallsBackUnsupportedPolicy(t *testing.T) {
 	agentConf := agent.NewAgentConfiguration()
 	agentConf.GetDynamicConfiguration().IRQTuningConfiguration.EnableTuner = true
-	agentConf.GetDynamicConfiguration().IRQTuningConfiguration.TuningPolicy =
-		v1alpha1.TuningPolicyExclusive
+	agentConf.GetDynamicConfiguration().IRQTuningConfiguration.TuningPolicy = v1alpha1.TuningPolicyExclusive
 	emitter := &recordingMetricsEmitter{}
 
 	controller := &IrqTuningController{
