@@ -110,7 +110,7 @@ func Test_GetCPUInfoWithTopo(t *testing.T) {
 		})
 
 		mockey.PatchConvey("Scenario 3: Successfully obtaining arm64 CPU topology", func() {
-			mockey.MockValue(&cpuid.CPU.VendorID).To(cpuid.Intel)
+			mockey.MockValue(&cpuid.CPU.VendorID).To(cpuid.VendorUnknown)
 			mockey.Mock(getMachineArchitecture).Return("arm64", nil).Build()
 			mockNode0 := &mockDirEntry{entryName: "node0", isDir: true}
 			mockey.Mock(os.ReadDir).Return([]fs.DirEntry{mockNode0}, nil).Build()
@@ -129,7 +129,7 @@ func Test_GetCPUInfoWithTopo(t *testing.T) {
 
 			So(err, ShouldBeNil)
 			So(info, ShouldNotBeNil)
-			So(info.CPUVendor, ShouldEqual, cpuid.Intel)
+			So(info.CPUVendor, ShouldEqual, cpuid.VendorUnknown)
 			So(info.Sockets[0].NumaIDs, ShouldResemble, []int{0})
 			So(info.Sockets[0].Numas[0], ShouldResemble, genericNuma)
 			So(info.Sockets[0].CPUs, ShouldResemble, []int64{0, 1})
