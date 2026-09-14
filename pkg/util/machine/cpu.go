@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -526,6 +527,15 @@ func getSocketCPUList(socket *CPUSocket) []int64 {
 // GetCPUInfoWithTopo get cpu info with topo
 // https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-devices-system-cpu
 func GetCPUInfoWithTopo() (*CPUInfo, error) {
+	// CPU topology discovery relies on the Linux sysfs layout under
+	// /sys/devices/system/{node,cpu}. On non-Linux platforms there is no such
+	// interface, so report the platform as unsupported instead of attempting to
+	// read sysfs paths that do not exist.
+	if runtime.GOOS != "linux" {
+		general.Infof("cpu topology discovery is unsupported on %s", runtime.GOOS)
+		return nil, nil
+	}
+
 	cpuInfo := &CPUInfo{
 		CPUVendor:  cpuid.CPU.VendorID,
 		Sockets:    make(map[int]*CPUSocket),
