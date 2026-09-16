@@ -57,8 +57,22 @@ type MemoryQRMPluginConfig struct {
 	SockMemQRMPluginConfig
 	// LogCacheQRMPluginConfig: the configuration for logcache evicting
 	LogCacheQRMPluginConfig
+	// NumaMemCompactConfig: the configuration for proactively compacting memory on idle NUMA nodes
+	NumaMemCompactConfig
 	// ResctrlConfig: the configuration for resctrl FS related hints
 	ResctrlConfig
+}
+
+// NumaMemCompactConfig holds the static configuration for the numacompact idle-NUMA compaction
+// handler. The idle-NUMA gate switch (EnableNumaMemCompact) is dynamic (see
+// NumaMemCompactConfiguration / AdminQoSConfiguration) so it can be targeted per machine-type;
+// only the handler scanning period is static because a periodical handler's period is fixed at
+// registration time.
+type NumaMemCompactConfig struct {
+	// NumaMemCompactCheckInterval is the scanning period of the numacompact NumaMemCompact
+	// handler, i.e. how often all NUMA nodes are checked for proactive memory compaction. A
+	// non-positive value falls back to the default period.
+	NumaMemCompactCheckInterval time.Duration
 }
 
 type SockMemQRMPluginConfig struct {
