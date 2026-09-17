@@ -1,0 +1,226 @@
+//go:build linux
+// +build linux
+
+/*
+Copyright 2022 The Katalyst Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Package compaction holds the node-level memory-compaction primitives shared by the memory
+// handlers (numacompact and fragmem): triggering a per-NUMA compaction via sysfs, discovering the
+// per-NUMA kcompactd kernel threads, and skipping a node whose kcompactd is currently busy.
+package compaction
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/kubewharf/katalyst-core/pkg/util/general"
+)
+
+const (
+	// hostMemNodePath is the sysfs prefix for per-NUMA node knobs; "<node>/compact" triggers
+	// node-level memory compaction.
+	hostMemNodePath = "/sys/devices/system/node/node"
+
+	// commandKcompactd is the comm prefix of the per-NUMA kcompactd kernel threads
+	// ("kcompactd<numaID>", e.g. kcompactd0).
+	commandKcompactd = "kcompactd"
+)
+
+var (
+	// ProcFSRoot is the procfs mount point. It is a variable so tests can point it at a fake tree.
+	ProcFSRoot = "/proc"
+
+	// numaKcompactdPid maps a NUMA node id to the pid of its kcompactd kernel thread, whose comm is
+	// "kcompactd<numaID>". It is discovered once (see ensureNumaKcompactdPids) so that the per-cycle
+	// state check does not have to walk /proc every time.
+	numaKcompactdPid   = make(map[int]int)
+	numaKcompactdPidMu sync.RWMutex
+
+	// CompactMemoryNodeFn triggers node-level memory compaction. It is a variable so that tests can
+	// observe which NUMA nodes get compacted without touching sysfs.
+	CompactMemoryNodeFn = setHostMemCompact
+
+	// numaCompacting tracks which NUMA nodes currently have a compaction in progress, so that a
+	// concurrent call (e.g. from another plugin sharing this helper) targeting the same node is
+	// skipped rather than duplicating the work. Entries are added before the compaction starts and
+	// removed once it returns.
+	numaCompacting   = make(map[int]struct{})
+	numaCompactingMu sync.Mutex
+)
+
+// tryAcquireNumaCompacting attempts to mark numaID as being compacted. It returns true if the
+// caller acquired it (no compaction was in progress for that node), and false if another compaction
+// is already running for numaID and the caller should skip.
+func tryAcquireNumaCompacting(numaID int) bool {
+	numaCompactingMu.Lock()
+	defer numaCompactingMu.Unlock()
+	if _, ok := numaCompacting[numaID]; ok {
+		return false
+	}
+	numaCompacting[numaID] = struct{}{}
+	return true
+}
+
+// releaseNumaCompacting clears the in-progress mark for numaID.
+func releaseNumaCompacting(numaID int) {
+	numaCompactingMu.Lock()
+	defer numaCompactingMu.Unlock()
+	delete(numaCompacting, numaID)
+}
+
+// setHostMemCompact triggers node-level memory compaction for the given NUMA node via sysfs.
+func setHostMemCompact(node int) {
+	targetFile := hostMemNodePath + strconv.Itoa(node) + "/compact"
+	_ = os.WriteFile(targetFile, []byte(fmt.Sprintf("%d", 1)), 0o644)
+}
+
+// discoverNumaKcompactdPids walks ProcFSRoot and records, per NUMA node, the pid of its kcompactd
+// kernel thread (comm == "kcompactd<numaID>").
+func discoverNumaKcompactdPids() map[int]int {
+	result := make(map[int]int)
+
+	dirEnts, err := os.ReadDir(ProcFSRoot)
+	if err != nil {
+		general.Errorf("failed to read %s: %v", ProcFSRoot, err)
+		return result
+	}
+
+	for _, de := range dirEnts {
+		pid, err := strconv.Atoi(de.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+
+		b, err := os.ReadFile(filepath.Join(ProcFSRoot, de.Name(), "comm"))
+		if err != nil {
+			continue
+		}
+		comm := strings.TrimSpace(string(b))
+
+		// kcompactd kernel threads are named "kcompactd<node>" (e.g. kcompactd0, kcompactd1).
+		if !strings.HasPrefix(comm, commandKcompactd) {
+			continue
+		}
+		numaID, err := strconv.Atoi(strings.TrimPrefix(comm, commandKcompactd))
+		if err != nil || numaID < 0 {
+			continue
+		}
+		result[numaID] = pid
+	}
+
+	return result
+}
+
+// ensureNumaKcompactdPids discovers the per-NUMA kcompactd pids once and caches them. Until the
+// discovery finds at least one kcompactd thread it retries on every call, so a transient failure
+// (or a not-yet-ready procfs) does not permanently leave the cache empty.
+func ensureNumaKcompactdPids() {
+	numaKcompactdPidMu.RLock()
+	populated := len(numaKcompactdPid) > 0
+	numaKcompactdPidMu.RUnlock()
+	if populated {
+		return
+	}
+
+	pids := discoverNumaKcompactdPids()
+	if len(pids) == 0 {
+		return
+	}
+
+	numaKcompactdPidMu.Lock()
+	numaKcompactdPid = pids
+	numaKcompactdPidMu.Unlock()
+	general.Infof("discovered kcompactd pids per NUMA: %v", pids)
+}
+
+// readPidState returns the single-letter process state (e.g. "R", "S", "D") read from the State
+// field of /proc/<pid>/status, and whether it was read successfully.
+func readPidState(pid int) (string, bool) {
+	b, err := os.ReadFile(filepath.Join(ProcFSRoot, strconv.Itoa(pid), "status"))
+	if err != nil {
+		return "", false
+	}
+
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(line, "State:") {
+			continue
+		}
+		// e.g. "State:\tD (disk sleep)" -> fields[1] == "D".
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			return fields[1], true
+		}
+	}
+	return "", false
+}
+
+// IsNumaKcompactdBusy reports whether the kcompactd thread bound to numaID is currently busy doing
+// compaction, i.e. it is in the R (running) or D (uninterruptible sleep) state. When the pid is
+// unknown or its state cannot be read, it conservatively returns false so compaction is allowed.
+func IsNumaKcompactdBusy(numaID int) bool {
+	numaKcompactdPidMu.RLock()
+	pid, ok := numaKcompactdPid[numaID]
+	numaKcompactdPidMu.RUnlock()
+	if !ok {
+		return false
+	}
+
+	state, ok := readPidState(pid)
+	if !ok {
+		return false
+	}
+	return state == "R" || state == "D"
+}
+
+// TryCompactNUMANode triggers node-level memory compaction for numaID unless that node's own
+// kcompactd thread is currently busy (R/D state), in which case the node is skipped. It returns
+// true if compaction was performed and false if the node was skipped (kcompactd busy, or another
+// caller is already compacting this node). Emitting a metric is left to the caller so each plugin
+// can use its own metric name and tags. The per-NUMA kcompactd pids are discovered lazily on first
+// use (and retried until found), so callers do not have to prime them before the scan loop.
+func TryCompactNUMANode(numaID int) bool {
+	// Guard against concurrent compaction of the same node (e.g. two plugins sharing this helper):
+	// if another caller is already compacting numaID, skip rather than duplicate the work.
+	if !tryAcquireNumaCompacting(numaID) {
+		general.Infof("skip NUMA %d: a compaction is already in progress", numaID)
+		return false
+	}
+	defer releaseNumaCompacting(numaID)
+
+	// Make sure the per-NUMA kcompactd pids are known before consulting their state. This is a
+	// no-op once the pids have been discovered.
+	ensureNumaKcompactdPids()
+
+	if IsNumaKcompactdBusy(numaID) {
+		general.Infof("skip NUMA %d: kcompactd is busy (R/D state)", numaID)
+		return false
+	}
+
+	CompactMemoryNodeFn(numaID)
+	return true
+}
+
+// ResetKcompactdPidsForTest clears the discovered kcompactd pid cache so tests can start from a
+// known-empty state. It is intended for use by tests only.
+func ResetKcompactdPidsForTest() {
+	numaKcompactdPidMu.Lock()
+	defer numaKcompactdPidMu.Unlock()
+	numaKcompactdPid = make(map[int]int)
+}
