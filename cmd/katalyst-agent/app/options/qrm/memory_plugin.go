@@ -77,7 +77,7 @@ type LogCacheOptions struct {
 }
 
 type NumaMemCompactOptions struct {
-	// CheckInterval is the scanning period of the numacompact idle-NUMA compaction handler.
+	// CheckInterval is the heartbeat and task scheduling period of the numacompact handler.
 	// The idle-NUMA gate switch (EnableNumaMemCompact) is dynamic (AdminQoSConfiguration),
 	// so it is not a static option here.
 	CheckInterval time.Duration
@@ -195,7 +195,7 @@ func (o *MemoryOptions) AddFlags(fss *cliflag.NamedFlagSets) {
 		o.FileFilters, "string list to filter log files, default to *log*")
 
 	fs.DurationVar(&o.CheckInterval, "qrm-memory-numa-compact-check-interval",
-		o.CheckInterval, "the scanning period of the numacompact idle-NUMA compaction handler (how often NUMA nodes are checked)")
+		o.CheckInterval, "the heartbeat and task scheduling period of the numacompact handler")
 
 	fs.BoolVar(&o.EnableResctrlHint, "pod-admit-resctrl-layout-hint",
 		o.EnableResctrlHint, "if set true, we will enable resctrl hint on pod admission")

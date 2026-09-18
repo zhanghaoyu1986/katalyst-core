@@ -55,6 +55,10 @@ const (
 	// metricNameNumaMemCompactError is emitted whenever the handler hits a runtime error, tagged
 	// with a "reason" describing what failed.
 	metricNameNumaMemCompactError = "numa_memory_compact_error"
+
+	// metricNameNumaMemCompactTaskDurationSeconds reports how long the current background scan has
+	// been running, tagged with ongoing=true.
+	metricNameNumaMemCompactTaskDurationSeconds = "numa_memory_compact_task_duration_seconds"
 )
 
 const (

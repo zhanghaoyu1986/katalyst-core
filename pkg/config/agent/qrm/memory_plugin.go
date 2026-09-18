@@ -66,12 +66,10 @@ type MemoryQRMPluginConfig struct {
 // NumaMemCompactConfig holds the static configuration for the numacompact idle-NUMA compaction
 // handler. The idle-NUMA gate switch (EnableNumaMemCompact) is dynamic (see
 // NumaMemCompactConfiguration / AdminQoSConfiguration) so it can be targeted per machine-type;
-// only the handler scanning period is static because a periodical handler's period is fixed at
-// registration time.
+// only the handler period is configured statically.
 type NumaMemCompactConfig struct {
-	// NumaMemCompactCheckInterval is the scanning period of the numacompact NumaMemCompact
-	// handler, i.e. how often all NUMA nodes are checked for proactive memory compaction. A
-	// non-positive value falls back to the default period.
+	// NumaMemCompactCheckInterval is how often the handler updates its heartbeat and starts a scan
+	// if no task is running. A non-positive value uses the default period.
 	NumaMemCompactCheckInterval time.Duration
 }
 

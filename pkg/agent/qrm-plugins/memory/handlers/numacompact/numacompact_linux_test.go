@@ -26,38 +26,56 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	pluginapi "k8s.io/kubelet/pkg/apis/resourceplugin/v1alpha1"
 
 	apiconsts "github.com/kubewharf/katalyst-api/pkg/consts"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/commonstate"
+	memconsts "github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/memory/consts"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/memory/dynamicpolicy/state"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/memory/handlers/compaction"
 	coreconfig "github.com/kubewharf/katalyst-core/pkg/config"
-	"github.com/kubewharf/katalyst-core/pkg/config/agent"
 	dynamicconfig "github.com/kubewharf/katalyst-core/pkg/config/agent/dynamic"
 	"github.com/kubewharf/katalyst-core/pkg/metaserver"
 	metaagent "github.com/kubewharf/katalyst-core/pkg/metaserver/agent"
 	"github.com/kubewharf/katalyst-core/pkg/metaserver/agent/pod"
 	"github.com/kubewharf/katalyst-core/pkg/metrics"
+	"github.com/kubewharf/katalyst-core/pkg/util/general"
 	"github.com/kubewharf/katalyst-core/pkg/util/machine"
 )
 
 const testOrder9UnusableIndexDegradedThreshold = 5.0
 
 func makeNumaMemCompactCoreConf(enable bool) (*coreconfig.Configuration, *dynamicconfig.DynamicAgentConfiguration) {
-	dynamicConf := dynamicconfig.NewDynamicAgentConfiguration()
+	conf := coreconfig.NewConfiguration()
+	dynamicConf := conf.DynamicAgentConfiguration
 	dynamicConf.GetDynamicConfiguration().NumaMemCompactConfiguration.EnableNumaMemCompact = enable
 
-	return &coreconfig.Configuration{
-		AgentConfiguration: &agent.AgentConfiguration{
-			DynamicAgentConfiguration: dynamicConf,
-		},
-	}, dynamicConf
+	general.RegisterHeartbeatCheck(memconsts.NumaMemCompact, 30*time.Second, general.HealthzCheckStateReady, 0)
+	return conf, dynamicConf
+}
+
+func waitNumaMemCompactTask(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		numaMemCompactTaskMu.Lock()
+		ongoing := numaMemCompactTask.ongoing
+		numaMemCompactTaskMu.Unlock()
+		if !ongoing {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("NUMA compaction worker did not return")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func makeMetaServer() (*metaserver.MetaServer, error) {
@@ -319,7 +337,7 @@ func TestNumaMemCompactRefreshesStateForEachNUMA(t *testing.T) {
 			},
 			{
 				v1.ResourceMemory: makeNUMANodeMap(map[int]string{
-					0: "",
+					0: apiconsts.PodAnnotationQoSLevelDedicatedCores,
 					1: apiconsts.PodAnnotationQoSLevelDedicatedCores,
 				}),
 			},
@@ -328,9 +346,10 @@ func TestNumaMemCompactRefreshesStateForEachNUMA(t *testing.T) {
 
 	doNumaMemCompact(metaServer, metrics.DummyMetrics{}, 0, testOrder9UnusableIndexDegradedThreshold)
 
-	assert.Equal(t, []int{0}, *compacted)
-	assert.True(t, isNumaCompacted(0))
-	assert.False(t, isNumaCompacted(1))
+	// NUMA iteration order is unspecified; after the first compaction either next node is busy.
+	require.Len(t, *compacted, 1)
+	assert.True(t, isNumaCompacted((*compacted)[0]))
+	assert.False(t, isNumaCompacted(1-(*compacted)[0]))
 }
 
 func TestNumaMemCompactEdgeTriggered(t *testing.T) {
@@ -628,6 +647,7 @@ func TestNumaMemCompact(t *testing.T) {
 	// enabled: idle NUMA nodes are compacted once.
 	conf, dynamicConf = makeNumaMemCompactCoreConf(true)
 	NumaMemCompact(conf, metrics.DummyMetrics{}, dynamicConf, metrics.DummyMetrics{}, metaServer)
+	waitNumaMemCompactTask(t)
 	assert.ElementsMatch(t, []int{0, 1}, *compacted)
 }
 
@@ -653,7 +673,130 @@ func TestNumaMemCompactDisabledClearsState(t *testing.T) {
 
 	dynamicConf.GetDynamicConfiguration().NumaMemCompactConfiguration.EnableNumaMemCompact = true
 	NumaMemCompact(conf, metrics.DummyMetrics{}, dynamicConf, metrics.DummyMetrics{}, metaServer)
+	waitNumaMemCompactTask(t)
 	assert.Equal(t, []int{0}, *compacted)
+}
+
+// The release channel models an uninterruptible sysfs write. Cleanup joins the worker before
+// restoring fake filesystem paths or the compaction function.
+func withBlockedCompactFn(t *testing.T) (<-chan int, func(), *[]int) {
+	t.Helper()
+	compacted := withRecordingCompactFn(t)
+	readinessPath := withFakeUnusableIndexPath(t)
+	writeFakeUnusableIndexes(t, readinessPath, map[int]float64{0: 30, 1: 30})
+	record := compaction.CompactMemoryNodeFn
+	started := make(chan int, 4)
+	released := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(released) }) }
+	compaction.CompactMemoryNodeFn = func(numaID int) {
+		record(numaID)
+		started <- numaID
+		<-released
+	}
+	t.Cleanup(func() {
+		release()
+		waitNumaMemCompactTask(t)
+	})
+	return started, release, compacted
+}
+
+func waitCompactStarted(t *testing.T, started <-chan int) int {
+	t.Helper()
+	select {
+	case numaID := <-started:
+		return numaID
+	case <-time.After(5 * time.Second):
+		t.Fatal("NUMA compaction did not start")
+		return -1
+	}
+}
+
+func TestNumaMemCompactTaskDurationMetric(t *testing.T) {
+	resetNumaCompactState()
+	started, release, compacted := withBlockedCompactFn(t)
+	setReadonlyStateWithPods(map[int]string{0: "", 1: ""})
+	metaServer, err := makeMetaServer()
+	require.NoError(t, err)
+	conf, dynamicConf := makeNumaMemCompactCoreConf(true)
+	emitter := newRecordingEmitter()
+
+	NumaMemCompact(conf, nil, dynamicConf, emitter, metaServer)
+	numaID := waitCompactStarted(t, started)
+	numaMemCompactTaskMu.Lock()
+	numaMemCompactTask.startedAt = time.Now().Add(-time.Minute)
+	startedAt := numaMemCompactTask.startedAt
+	numaMemCompactTaskMu.Unlock()
+
+	// A long-running task does not block the handler heartbeat and reports its running duration.
+	require.NoError(t, general.UpdateHealthzState(memconsts.NumaMemCompact,
+		general.HealthzCheckStateNotReady, "previous heartbeat"))
+	NumaMemCompact(conf, nil, dynamicConf, emitter, metaServer)
+	health := general.GetRegisterReadinessCheckResult()
+	assert.True(t, health[general.HealthzCheckName(memconsts.NumaMemCompact)].Ready)
+	assert.GreaterOrEqual(t, emitter.intValue(metricNameNumaMemCompactTaskDurationSeconds), int64(60))
+	assert.Equal(t, "true", emitter.intTag(metricNameNumaMemCompactTaskDurationSeconds, "ongoing"))
+
+	// Subsequent handler cycles observe the same task instead of starting another one.
+	for i := 0; i < 3; i++ {
+		NumaMemCompact(conf, nil, dynamicConf, emitter, metaServer)
+	}
+	numaMemCompactTaskMu.Lock()
+	assert.True(t, numaMemCompactTask.ongoing)
+	assert.Equal(t, startedAt, numaMemCompactTask.startedAt)
+	numaMemCompactTaskMu.Unlock()
+	assert.False(t, compaction.TryCompactNUMANode(numaID))
+
+	release()
+	waitNumaMemCompactTask(t)
+	assert.ElementsMatch(t, []int{0, 1}, *compacted)
+	assert.True(t, isNumaCompacted(0))
+	assert.True(t, isNumaCompacted(1))
+}
+
+func TestNumaMemCompactDisableWhileTaskRunning(t *testing.T) {
+	resetNumaCompactState()
+	started, release, compacted := withBlockedCompactFn(t)
+	setReadonlyStateWithPods(map[int]string{0: "", 1: ""})
+	metaServer, err := makeMetaServer()
+	require.NoError(t, err)
+	conf, dynamicConf := makeNumaMemCompactCoreConf(true)
+	emitter := newRecordingEmitter()
+
+	NumaMemCompact(conf, nil, dynamicConf, emitter, metaServer)
+	numaID := waitCompactStarted(t, started)
+	numaMemCompactTaskMu.Lock()
+	startedAt := numaMemCompactTask.startedAt
+	numaMemCompactTaskMu.Unlock()
+	setNumaCompactState(2, 30)
+
+	dynamicConf.GetDynamicConfiguration().NumaMemCompactConfiguration.EnableNumaMemCompact = false
+	NumaMemCompact(conf, nil, dynamicConf, emitter, metaServer)
+	assert.False(t, isNumaCompacted(2))
+	assert.Equal(t, int64(0), emitter.intValue(metricNameNumaMemCompactEnabled))
+	assert.Equal(t, "true", emitter.intTag(metricNameNumaMemCompactTaskDurationSeconds, "ongoing"))
+
+	dynamicConf.GetDynamicConfiguration().NumaMemCompactConfiguration.EnableNumaMemCompact = true
+	for i := 0; i < 3; i++ {
+		NumaMemCompact(conf, nil, dynamicConf, emitter, metaServer)
+	}
+	numaMemCompactTaskMu.Lock()
+	assert.True(t, numaMemCompactTask.ongoing)
+	assert.Equal(t, startedAt, numaMemCompactTask.startedAt)
+	numaMemCompactTaskMu.Unlock()
+	assert.False(t, compaction.TryCompactNUMANode(numaID))
+	release()
+	waitNumaMemCompactTask(t)
+	assert.ElementsMatch(t, []int{0, 1}, *compacted)
+	assert.False(t, isNumaCompacted(0))
+	assert.False(t, isNumaCompacted(1), "the late write must not resurrect the old idle-cycle state")
+
+	NumaMemCompact(conf, nil, dynamicConf, emitter, metaServer)
+	waitNumaMemCompactTask(t)
+	require.Len(t, *compacted, 4)
+	assert.ElementsMatch(t, []int{0, 1}, (*compacted)[2:])
+	assert.True(t, isNumaCompacted(0))
+	assert.True(t, isNumaCompacted(1))
 }
 
 func TestSetHostMemCompact(t *testing.T) {
@@ -665,6 +808,7 @@ func TestSetHostMemCompact(t *testing.T) {
 // times each (key, reason-tag) pair was stored.
 type recordingEmitter struct {
 	metrics.DummyMetrics
+	mu           sync.Mutex
 	values       map[string]int64
 	intTags      map[string]map[string]string
 	floatValues  map[string]float64
@@ -682,7 +826,21 @@ func newRecordingEmitter() *recordingEmitter {
 	}
 }
 
+func (e *recordingEmitter) intValue(key string) int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.values[key]
+}
+
+func (e *recordingEmitter) intTag(key, tag string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.intTags[key][tag]
+}
+
 func (e *recordingEmitter) StoreInt64(key string, val int64, _ metrics.MetricTypeName, tags ...metrics.MetricTag) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.values[key] = val
 	e.intTags[key] = make(map[string]string, len(tags))
 	for _, tag := range tags {
@@ -699,6 +857,8 @@ func (e *recordingEmitter) StoreInt64(key string, val int64, _ metrics.MetricTyp
 }
 
 func (e *recordingEmitter) StoreFloat64(key string, val float64, _ metrics.MetricTypeName, tags ...metrics.MetricTag) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.floatValues[key] = val
 	e.floatTags[key] = make(map[string]string, len(tags))
 	for _, tag := range tags {
@@ -726,6 +886,7 @@ func TestNumaMemCompactEnabledMetric(t *testing.T) {
 	emitter = newRecordingEmitter()
 	conf, dynamicConf = makeNumaMemCompactCoreConf(true)
 	NumaMemCompact(conf, metrics.DummyMetrics{}, dynamicConf, emitter, metaServer)
+	waitNumaMemCompactTask(t)
 	assert.Equal(t, int64(1), emitter.values[metricNameNumaMemCompactEnabled])
 }
 
@@ -748,5 +909,6 @@ func TestNumaMemCompactErrorMetric(t *testing.T) {
 	emitter = newRecordingEmitter()
 	withRecordingCompactFn(t)
 	NumaMemCompact(conf, metrics.DummyMetrics{}, dynamicConf, emitter, metaServer)
+	waitNumaMemCompactTask(t)
 	assert.Equal(t, 1, emitter.reasonCounts[metricNameNumaMemCompactError][errReasonReadStateFailed])
 }

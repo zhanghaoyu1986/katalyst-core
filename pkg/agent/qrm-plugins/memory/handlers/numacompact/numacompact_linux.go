@@ -25,7 +25,6 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/errors"
 
 	memconsts "github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/memory/consts"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/memory/dynamicpolicy/state"
@@ -49,9 +48,20 @@ var (
 
 	numaLastCompactMu sync.RWMutex
 
+	// Keep the task marked ongoing until the worker actually returns.
+	numaMemCompactTask   numaCompactTaskState
+	numaMemCompactTaskMu sync.Mutex
+
 	// nowFn returns the current time. It is a variable so tests can control the clock.
 	nowFn = time.Now
 )
+
+// All fields are guarded by numaMemCompactTaskMu.
+type numaCompactTaskState struct {
+	ongoing   bool
+	startedAt time.Time
+	reset     bool
+}
 
 type numaCompactState struct {
 	compactAt                      time.Time
@@ -304,18 +314,29 @@ func doNumaMemCompact(metaServer *metaserver.MetaServer, emitter metrics.MetricE
 	}
 }
 
+// reportNumaMemCompactTaskDuration reports how long the current background scan has been running.
+// The caller holds numaMemCompactTaskMu.
+func reportNumaMemCompactTaskDuration(emitter metrics.MetricEmitter) {
+	if !numaMemCompactTask.ongoing {
+		return
+	}
+	_ = emitter.StoreInt64(metricNameNumaMemCompactTaskDurationSeconds,
+		int64(time.Since(numaMemCompactTask.startedAt).Seconds()), metrics.MetricTypeNameRaw,
+		metrics.MetricTag{Key: "ongoing", Val: "true"})
+}
+
 // NumaMemCompact is the periodical handler that proactively compacts memory on idle NUMA nodes.
 // It is a standalone feature, independent of the fragmem handler, and is gated only by the
 // dynamically configured EnableNumaMemCompact switch (per machine-type via AdminQoSConfiguration).
+// It schedules at most one background scan so synchronous compaction never blocks its heartbeat.
 func NumaMemCompact(conf *coreconfig.Configuration,
 	_ interface{}, dynamicConf *dynamicconfig.DynamicAgentConfiguration,
 	emitter metrics.MetricEmitter, metaServer *metaserver.MetaServer,
 ) {
 	general.Infof("NumaMemCompact was called")
 
-	var errList []error
 	defer func() {
-		_ = general.UpdateHealthzStateByError(memconsts.NumaMemCompact, errors.NewAggregate(errList))
+		_ = general.UpdateHealthzStateByError(memconsts.NumaMemCompact, nil)
 	}()
 
 	if conf == nil || emitter == nil || metaServer == nil {
@@ -339,12 +360,41 @@ func NumaMemCompact(conf *coreconfig.Configuration,
 	}
 	_ = emitter.StoreInt64(metricNameNumaMemCompactEnabled, enabledValue, metrics.MetricTypeNameRaw)
 
+	numaMemCompactTaskMu.Lock()
+	defer numaMemCompactTaskMu.Unlock()
+	defer reportNumaMemCompactTaskDuration(emitter)
+
 	if !numaMemCompactConf.EnableNumaMemCompact {
 		general.Infof("NumaMemCompact skipped: EnableNumaMemCompact disabled")
+		if numaMemCompactTask.ongoing {
+			numaMemCompactTask.reset = true
+		}
 		clearNumaCompactStates()
 		return
 	}
 
-	doNumaMemCompact(metaServer, emitter, numaMemCompactConf.NumaMemCompactInterval,
-		numaMemCompactConf.Order9UnusableIndexDegradedThreshold)
+	if numaMemCompactTask.ongoing {
+		return
+	}
+
+	startedAt := time.Now()
+	numaMemCompactTask = numaCompactTaskState{
+		ongoing:   true,
+		startedAt: startedAt,
+	}
+	interval := numaMemCompactConf.NumaMemCompactInterval
+	degradedThreshold := numaMemCompactConf.Order9UnusableIndexDegradedThreshold
+	go func() {
+		defer func() {
+			numaMemCompactTaskMu.Lock()
+			defer numaMemCompactTaskMu.Unlock()
+			// A write finishing after disable must not restore the previous idle-cycle baseline,
+			// even if the feature has already been re-enabled while that write was in flight.
+			if numaMemCompactTask.reset {
+				clearNumaCompactStates()
+			}
+			numaMemCompactTask = numaCompactTaskState{}
+		}()
+		doNumaMemCompact(metaServer, emitter, interval, degradedThreshold)
+	}()
 }
