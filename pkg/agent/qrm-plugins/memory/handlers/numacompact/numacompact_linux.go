@@ -39,40 +39,70 @@ import (
 )
 
 var (
-	// numaLastCompact records, per NUMA node, the time of its most recent idle compaction. A NUMA
-	// node absent from the map has not been compacted since it last became idle (or has never been
-	// observed idle), so it is eligible for the falling-edge compaction. Once compacted, the entry
-	// gates periodic re-compaction while the node stays idle (see doNumaMemCompact). When a business
-	// pod is present on a node, its entry is removed so the next idle period triggers a fresh
-	// falling-edge compaction.
-	numaLastCompact   = make(map[int]time.Time)
+	// numaLastCompact records, per NUMA node, the compaction state in the current idle period. A
+	// NUMA node absent from the map has not been compacted since it last became idle (or has never
+	// been observed idle), so it is eligible for the falling-edge compaction. Once compacted, the
+	// entry enables periodic order-9 readiness checks while the node stays idle (see
+	// doNumaMemCompact). When a business pod is present on a node, its entry is removed so the next
+	// idle period triggers a fresh falling-edge compaction.
+	numaLastCompact = make(map[int]*numaCompactState)
+
 	numaLastCompactMu sync.RWMutex
 
 	// nowFn returns the current time. It is a variable so tests can control the clock.
 	nowFn = time.Now
 )
 
-// getNumaLastCompact returns the last idle-compaction time of numaID and whether it has one.
-func getNumaLastCompact(numaID int) (time.Time, bool) {
+type numaCompactState struct {
+	compactAt                      time.Time
+	postCompactOrder9UnusableIndex float64
+}
+
+type numaCompactResult struct {
+	costMs                             int64
+	preCompactUnusableIndex            float64
+	postCompactUnusableIndex           float64
+	preCompactOrder9PlusFreeSize       uint64
+	postCompactOrder9PlusFreeSize      uint64
+	order9PlusFreeSizeMetricsAvailable bool
+}
+
+// getNumaLastCompactState returns the idle-compaction state of numaID and whether it has one.
+func getNumaLastCompactState(numaID int) (*numaCompactState, bool) {
 	numaLastCompactMu.RLock()
 	defer numaLastCompactMu.RUnlock()
-	t, ok := numaLastCompact[numaID]
-	return t, ok
+	state, ok := numaLastCompact[numaID]
+	if !ok || state == nil {
+		return nil, false
+	}
+	return state, true
 }
 
-// setNumaLastCompact records the last idle-compaction time of numaID.
-func setNumaLastCompact(numaID int, t time.Time) {
+// setNumaCompactState records the latest compaction time and its post-compaction order-9 unusable
+// index. An invalid index keeps the compaction cooldown effective without reusing an older baseline.
+func setNumaCompactState(numaID int, unusableIndex float64) {
 	numaLastCompactMu.Lock()
 	defer numaLastCompactMu.Unlock()
-	numaLastCompact[numaID] = t
+	numaLastCompact[numaID] = &numaCompactState{
+		compactAt:                      nowFn(),
+		postCompactOrder9UnusableIndex: unusableIndex,
+	}
 }
 
-// clearNumaLastCompact drops the idle-compaction record of numaID (called when a business pod is
+// clearNumaCompactState drops the idle-compaction record of numaID (called when a business pod is
 // present), so the next idle period triggers a fresh falling-edge compaction.
-func clearNumaLastCompact(numaID int) {
+func clearNumaCompactState(numaID int) {
 	numaLastCompactMu.Lock()
 	defer numaLastCompactMu.Unlock()
 	delete(numaLastCompact, numaID)
+}
+
+// clearNumaCompactStates drops all idle-compaction records. This is used while the feature is
+// disabled so workload transitions during that period cannot leave stale idle-cycle state behind.
+func clearNumaCompactStates() {
+	numaLastCompactMu.Lock()
+	defer numaLastCompactMu.Unlock()
+	numaLastCompact = make(map[int]*numaCompactState)
 }
 
 // emitNumaMemCompactError emits a runtime-error metric tagged with the given reason. It is a no-op
@@ -83,6 +113,40 @@ func emitNumaMemCompactError(emitter metrics.MetricEmitter, reason string) {
 	}
 	_ = emitter.StoreInt64(metricNameNumaMemCompactError, 1, metrics.MetricTypeNameRaw,
 		metrics.MetricTag{Key: "reason", Val: reason})
+}
+
+func reportNumaMemCompactResult(emitter metrics.MetricEmitter, numaID int, result numaCompactResult) {
+	numaIDTag := metrics.MetricTag{Key: "numa_id", Val: strconv.Itoa(numaID)}
+	_ = emitter.StoreInt64(metricNameMemoryCompact, 1, metrics.MetricTypeNameRaw, numaIDTag)
+	_ = emitter.StoreInt64(metricNameMemoryCompactCost, result.costMs, metrics.MetricTypeNameRaw, numaIDTag)
+
+	if result.preCompactUnusableIndex != invalidUnusableIndex &&
+		result.postCompactUnusableIndex != invalidUnusableIndex {
+		unusableIndexDiff := result.preCompactUnusableIndex - result.postCompactUnusableIndex
+		_ = emitter.StoreFloat64(metricNameNumaMemCompactOrder9UnusableIndexDiff,
+			unusableIndexDiff,
+			metrics.MetricTypeNameRaw, numaIDTag,
+			metrics.MetricTag{Key: "pre", Val: strconv.FormatFloat(result.preCompactUnusableIndex, 'f', 1, 64)},
+			metrics.MetricTag{Key: "post", Val: strconv.FormatFloat(result.postCompactUnusableIndex, 'f', 1, 64)})
+		general.Infof("NUMA %d memory compaction completed, cost=%dms, pre_order_9_unusable_index=%.1f, post_order_9_unusable_index=%.1f, diff=%.1f",
+			numaID, result.costMs, result.preCompactUnusableIndex, result.postCompactUnusableIndex,
+			unusableIndexDiff)
+	} else {
+		general.Infof("NUMA %d memory compaction completed, cost=%dms", numaID, result.costMs)
+	}
+
+	if result.order9PlusFreeSizeMetricsAvailable {
+		freeSizeDiff := int64(result.postCompactOrder9PlusFreeSize) -
+			int64(result.preCompactOrder9PlusFreeSize)
+		_ = emitter.StoreInt64(metricNameNumaMemCompactOrder9PlusFreeSizeDiffBytes,
+			freeSizeDiff,
+			metrics.MetricTypeNameRaw, numaIDTag,
+			metrics.MetricTag{Key: "pre", Val: strconv.FormatUint(result.preCompactOrder9PlusFreeSize, 10)},
+			metrics.MetricTag{Key: "post", Val: strconv.FormatUint(result.postCompactOrder9PlusFreeSize, 10)})
+		general.Infof("NUMA %d order-9+ free memory size after compaction: pre=%dB, post=%dB, diff=%dB",
+			numaID, result.preCompactOrder9PlusFreeSize, result.postCompactOrder9PlusFreeSize,
+			freeSizeDiff)
+	}
 }
 
 // getNumaMemCompactConfiguration returns the dynamic NumaMemCompactConfiguration, or nil if the
@@ -99,8 +163,7 @@ func getNumaMemCompactConfiguration(dynamicConf *dynamicconfig.DynamicAgentConfi
 }
 
 // getMemoryNUMAState returns the memory NUMANodeMap from the memory plugin's readonly state,
-// together with whether it was read successfully. It is fetched once per scan cycle (not per NUMA)
-// to avoid repeatedly deep-copying the whole machine state.
+// together with whether it was read successfully.
 func getMemoryNUMAState() (state.NUMANodeMap, bool) {
 	readonlyState, err := state.GetReadonlyState()
 	if err != nil || readonlyState == nil {
@@ -112,62 +175,131 @@ func getMemoryNUMAState() (state.NUMANodeMap, bool) {
 
 // numaHasOnlineBusinessPods reports whether the given NUMA node currently hosts any online
 // business pod (shared_cores/dedicated_cores) according to the provided memory NUMANodeMap.
-// When the state was not read successfully (stateOK is false), it conservatively returns true so
-// that a NUMA node possibly carrying business pods is not compacted.
-func numaHasOnlineBusinessPods(machineState state.NUMANodeMap, stateOK bool, numaID int) bool {
-	if !stateOK {
-		return true
-	}
+func numaHasOnlineBusinessPods(machineState state.NUMANodeMap, numaID int) bool {
 	return machineState[numaID].HasSharedOrDedicatedPods()
 }
 
-// doNumaMemCompact proactively compacts memory only on NUMA nodes that carry no online
-// business (shared_cores/dedicated_cores) pods. It does not consult the fragmentation score.
+// doNumaMemCompact proactively compacts memory only on NUMA nodes that carry no online business
+// (shared_cores/dedicated_cores) pods. The initial idle transition compacts immediately; subsequent
+// attempts are gated by degradation from the NUMA node's post-compaction order-9 unusable index.
 //
-// The policy is edge-triggered with optional periodic re-compaction: a NUMA node is compacted once
-// right after it becomes idle (falling edge). If interval > 0, a still-idle NUMA node is compacted
-// again every interval; if interval <= 0, it is compacted only once until a business pod is
-// scheduled onto it and leaves again. Per-NUMA last-compaction time is tracked in numaLastCompact;
-// the entry is cleared when a business pod is present. The memory NUMA state is fetched once per
-// cycle (it is a deep copy) rather than per NUMA node.
-func doNumaMemCompact(metaServer *metaserver.MetaServer, emitter metrics.MetricEmitter, interval time.Duration) {
-	machineState, stateOK := getMemoryNUMAState()
-	if !stateOK {
-		// The readonly memory state is unavailable this cycle; every NUMA node is treated as busy
-		// below, so nothing is compacted. Surface it as a runtime error for observability.
-		emitNumaMemCompactError(emitter, errReasonReadStateFailed)
-	}
-
+// The policy is edge-triggered with readiness-based maintenance: a NUMA node is compacted once
+// right after it becomes idle (falling edge). If interval > 0, it acts as the minimum interval
+// between actual compactions. Once that interval has elapsed, order-9 readiness is checked on every
+// handler cycle and compaction is triggered only when the unusable-index increase from the
+// post-compaction baseline exceeds the threshold. If interval <= 0, the node is compacted only once
+// until a business pod is scheduled onto it and leaves again. The memory NUMA state is refreshed
+// for each NUMA node so decisions do not rely on a snapshot taken before earlier nodes were handled.
+func doNumaMemCompact(metaServer *metaserver.MetaServer, emitter metrics.MetricEmitter,
+	interval time.Duration, degradedThreshold float64,
+) {
 	for _, numaID := range metaServer.CPUDetails.NUMANodes().ToSliceNoSortInt() {
+		machineState, stateOK := getMemoryNUMAState()
+		if !stateOK {
+			emitNumaMemCompactError(emitter, errReasonReadStateFailed)
+			return
+		}
+
 		// A NUMA node hosting online business pods is dirtied: drop its compaction record so
 		// the next idle period triggers a fresh falling-edge compaction, and never compact here.
-		if numaHasOnlineBusinessPods(machineState, stateOK, numaID) {
+		if numaHasOnlineBusinessPods(machineState, numaID) {
 			general.Infof("skip NUMA %d: online business pods present", numaID)
-			clearNumaLastCompact(numaID)
+			clearNumaCompactState(numaID)
 			continue
 		}
 
-		// The NUMA node is idle now. If it was already compacted while idle, only
-		// re-compact when periodic re-compaction is enabled (interval > 0) and the interval has
-		// elapsed; otherwise there is nothing new to do, skip it.
-		if last, ok := getNumaLastCompact(numaID); ok {
-			if interval <= 0 || nowFn().Sub(last) < interval {
+		// The NUMA node is idle now. The first idle observation triggers compaction immediately.
+		// Afterwards, interval is the minimum delay before another compaction. Once it expires,
+		// order-9 readiness is checked on each handler cycle until compaction is needed.
+		preCompactUnusableIndex := invalidUnusableIndex
+		if lastCompact, ok := getNumaLastCompactState(numaID); ok {
+			if interval <= 0 || nowFn().Sub(lastCompact.compactAt) < interval {
 				continue
+			}
+
+			if lastCompact.postCompactOrder9UnusableIndex != invalidUnusableIndex {
+				unusableIndex, err := compaction.ReadNumaUnusableIndex(numaID, numaMemCompactTHPOrder)
+				if err != nil {
+					general.Errorf("failed to check NUMA %d order-9 unusable-index degradation: %v", numaID, err)
+					emitNumaMemCompactError(emitter, errReasonReadOrder9UnusableIndex)
+					continue
+				}
+				preCompactUnusableIndex = unusableIndex
+				unusableIndexDiff := unusableIndex - lastCompact.postCompactOrder9UnusableIndex
+				degraded := unusableIndexDiff > degradedThreshold
+				degradedValue := int64(0)
+				if degraded {
+					degradedValue = 1
+				}
+				_ = emitter.StoreInt64(metricNameNumaMemCompactOrder9UnusableIndexDegraded, degradedValue,
+					metrics.MetricTypeNameRaw,
+					metrics.MetricTag{Key: "numa_id", Val: strconv.Itoa(numaID)})
+				general.Infof("NUMA %d order-9 unusable index degradation checked: index=%.1f, baseline=%.1f, diff=%.1f, threshold=%.1f, degraded=%t",
+					numaID, unusableIndex, lastCompact.postCompactOrder9UnusableIndex, unusableIndexDiff,
+					degradedThreshold, degraded)
+				if !degraded {
+					continue
+				}
 			}
 		}
 
+		if preCompactUnusableIndex == invalidUnusableIndex {
+			unusableIndex, err := compaction.ReadNumaUnusableIndex(numaID, numaMemCompactTHPOrder)
+			if err != nil {
+				general.Errorf("failed to read NUMA %d pre-compaction order-9 unusable index: %v", numaID, err)
+				emitNumaMemCompactError(emitter, errReasonReadOrder9UnusableIndex)
+			} else {
+				preCompactUnusableIndex = unusableIndex
+			}
+		}
+
+		preCompactOrder9PlusFreeSize, preCompactOrder9PlusFreeSizeErr :=
+			compaction.ReadNumaFreeMemorySizeAtOrAboveOrder(numaID, numaMemCompactTHPOrder)
+		if preCompactOrder9PlusFreeSizeErr != nil {
+			general.Errorf("failed to read NUMA %d pre-compaction order-9+ free memory size: %v",
+				numaID, preCompactOrder9PlusFreeSizeErr)
+			emitNumaMemCompactError(emitter, errReasonReadOrder9PlusFreeSize)
+		}
+
 		// Compact this NUMA node unless its own kcompactd is busy (R/D state). Emit the
-		// per-compaction metric (tagged with the numa_id) and record the time only when a compaction
-		// actually happened, so that while the node stays idle it is not compacted again until the
-		// next interval elapses. Also emit how long the compaction took.
+		// per-compaction metric (tagged with the numa_id) and record the post-compaction state. Also
+		// emit how long the compaction took.
 		start := nowFn()
 		if compaction.TryCompactNUMANode(numaID) {
 			costMs := nowFn().Sub(start).Milliseconds()
-			numaIDTag := metrics.MetricTag{Key: "numa_id", Val: strconv.Itoa(numaID)}
-			_ = emitter.StoreInt64(metricNameMemoryCompact, 1, metrics.MetricTypeNameRaw, numaIDTag)
-			_ = emitter.StoreInt64(metricNameMemoryCompactCost, costMs, metrics.MetricTypeNameRaw, numaIDTag)
-			setNumaLastCompact(numaID, nowFn())
-			general.Infof("NUMA %d memory compaction completed, cost=%dms", numaID, costMs)
+
+			postCompactUnusableIndex, err := compaction.ReadNumaUnusableIndex(numaID, numaMemCompactTHPOrder)
+			if err != nil {
+				general.Errorf("failed to read NUMA %d post-compaction order-9 unusable index: %v", numaID, err)
+				emitNumaMemCompactError(emitter, errReasonReadOrder9UnusableIndex)
+				postCompactUnusableIndex = invalidUnusableIndex
+			}
+
+			setNumaCompactState(numaID, postCompactUnusableIndex)
+
+			if postCompactUnusableIndex != invalidUnusableIndex {
+				_ = emitter.StoreInt64(metricNameNumaMemCompactOrder9UnusableIndexDegraded, 0,
+					metrics.MetricTypeNameRaw,
+					metrics.MetricTag{Key: "numa_id", Val: strconv.Itoa(numaID)})
+			}
+
+			postCompactOrder9PlusFreeSize, postCompactOrder9PlusFreeSizeErr :=
+				compaction.ReadNumaFreeMemorySizeAtOrAboveOrder(numaID, numaMemCompactTHPOrder)
+			if postCompactOrder9PlusFreeSizeErr != nil {
+				general.Errorf("failed to read NUMA %d post-compaction order-9+ free memory size: %v",
+					numaID, postCompactOrder9PlusFreeSizeErr)
+				emitNumaMemCompactError(emitter, errReasonReadOrder9PlusFreeSize)
+			}
+
+			reportNumaMemCompactResult(emitter, numaID, numaCompactResult{
+				costMs:                        costMs,
+				preCompactUnusableIndex:       preCompactUnusableIndex,
+				postCompactUnusableIndex:      postCompactUnusableIndex,
+				preCompactOrder9PlusFreeSize:  preCompactOrder9PlusFreeSize,
+				postCompactOrder9PlusFreeSize: postCompactOrder9PlusFreeSize,
+				order9PlusFreeSizeMetricsAvailable: preCompactOrder9PlusFreeSizeErr == nil &&
+					postCompactOrder9PlusFreeSizeErr == nil,
+			})
 		}
 	}
 }
@@ -209,8 +341,10 @@ func NumaMemCompact(conf *coreconfig.Configuration,
 
 	if !numaMemCompactConf.EnableNumaMemCompact {
 		general.Infof("NumaMemCompact skipped: EnableNumaMemCompact disabled")
+		clearNumaCompactStates()
 		return
 	}
 
-	doNumaMemCompact(metaServer, emitter, numaMemCompactConf.NumaMemCompactInterval)
+	doNumaMemCompact(metaServer, emitter, numaMemCompactConf.NumaMemCompactInterval,
+		numaMemCompactConf.Order9UnusableIndexDegradedThreshold)
 }

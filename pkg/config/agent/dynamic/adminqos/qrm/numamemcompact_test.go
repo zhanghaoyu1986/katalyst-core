@@ -32,9 +32,12 @@ func TestNumaMemCompactConfigurationApplyConfiguration(t *testing.T) {
 	as := require.New(t)
 	enableNumaCompact := true
 	intervalSeconds := int64(900)
+	degradedThreshold := 12.5
 
-	// A freshly constructed configuration defaults the interval to defaultNumaMemCompactInterval.
-	as.Equal(defaultNumaMemCompactInterval, NewNumaMemCompactConfiguration().NumaMemCompactInterval)
+	// A freshly constructed configuration applies the static defaults.
+	defaultConf := NewNumaMemCompactConfiguration()
+	as.Equal(defaultNumaMemCompactInterval, defaultConf.NumaMemCompactInterval)
+	as.Equal(defaultOrder9UnusableIndexDegradedThreshold, defaultConf.Order9UnusableIndexDegradedThreshold)
 
 	conf := NewNumaMemCompactConfiguration()
 	conf.ApplyConfiguration(&crd.DynamicConfigCRD{
@@ -44,8 +47,9 @@ func TestNumaMemCompactConfigurationApplyConfiguration(t *testing.T) {
 					QRMPluginConfig: &apiconfig.QRMPluginConfig{
 						MemoryPluginConfig: &apiconfig.MemoryPluginConfig{
 							NumaMemCompactConfig: &apiconfig.NumaMemCompactConfig{
-								EnableNumaMemCompact:          &enableNumaCompact,
-								NumaMemCompactIntervalSeconds: &intervalSeconds,
+								EnableNumaMemCompact:                 &enableNumaCompact,
+								NumaMemCompactIntervalSeconds:        &intervalSeconds,
+								Order9UnusableIndexDegradedThreshold: &degradedThreshold,
 							},
 						},
 					},
@@ -56,6 +60,7 @@ func TestNumaMemCompactConfigurationApplyConfiguration(t *testing.T) {
 
 	as.True(conf.EnableNumaMemCompact)
 	as.Equal(900*time.Second, conf.NumaMemCompactInterval)
+	as.Equal(12.5, conf.Order9UnusableIndexDegradedThreshold)
 }
 
 func TestNumaMemCompactConfigurationIntervalClamp(t *testing.T) {
@@ -91,4 +96,15 @@ func TestNumaMemCompactConfigurationIntervalClamp(t *testing.T) {
 	// A non-positive interval disables periodic re-compaction and is kept as-is.
 	as.Equal(time.Duration(0), applyInterval(0))
 	as.Equal(-5*time.Second, applyInterval(-5))
+}
+
+func TestClampOrder9UnusableIndexDegradedThreshold(t *testing.T) {
+	t.Parallel()
+
+	as := require.New(t)
+	as.Equal(0.0, ClampOrder9UnusableIndexDegradedThreshold(-1))
+	as.Equal(0.0, ClampOrder9UnusableIndexDegradedThreshold(0))
+	as.Equal(10.0, ClampOrder9UnusableIndexDegradedThreshold(10))
+	as.Equal(100.0, ClampOrder9UnusableIndexDegradedThreshold(100))
+	as.Equal(100.0, ClampOrder9UnusableIndexDegradedThreshold(101))
 }

@@ -25,14 +25,16 @@ import (
 )
 
 type NumaMemCompactOptions struct {
-	EnableNumaMemCompact   bool
-	NumaMemCompactInterval time.Duration
+	EnableNumaMemCompact                 bool
+	NumaMemCompactInterval               time.Duration
+	Order9UnusableIndexDegradedThreshold float64
 }
 
 func NewNumaMemCompactOptions() *NumaMemCompactOptions {
 	return &NumaMemCompactOptions{
-		EnableNumaMemCompact:   false,
-		NumaMemCompactInterval: 1800 * time.Second,
+		EnableNumaMemCompact:                 false,
+		NumaMemCompactInterval:               1800 * time.Second,
+		Order9UnusableIndexDegradedThreshold: 5.0,
 	}
 }
 
@@ -41,8 +43,12 @@ func (o *NumaMemCompactOptions) AddFlags(fss *cliflag.NamedFlagSets) {
 	fs.BoolVar(&o.EnableNumaMemCompact, "qrm-memory-enable-numa-mem-compact",
 		o.EnableNumaMemCompact, "if set true, we will proactively compact idle NUMA nodes (those without shared_cores/dedicated_cores pods)")
 	fs.DurationVar(&o.NumaMemCompactInterval, "qrm-memory-numa-mem-compact-interval",
-		o.NumaMemCompactInterval, "the interval to re-compact a NUMA node while it stays idle after the initial compaction; "+
-			"a non-positive value disables periodic re-compaction (idle NUMA is compacted only once)")
+		o.NumaMemCompactInterval, "the minimum interval between actual compactions while a NUMA node stays idle; "+
+			"after it elapses, order-9 unusable-index degradation is checked each handler cycle and a non-positive value disables subsequent compaction")
+	fs.Float64Var(&o.Order9UnusableIndexDegradedThreshold,
+		"qrm-memory-numa-mem-compact-order-9-unusable-index-degraded-threshold",
+		o.Order9UnusableIndexDegradedThreshold,
+		"the minimum increase from the post-compaction order-9 unusable-index baseline that triggers another compaction")
 }
 
 func (o *NumaMemCompactOptions) ApplyTo(c *dynamicqrm.NumaMemCompactConfiguration) error {
@@ -50,5 +56,7 @@ func (o *NumaMemCompactOptions) ApplyTo(c *dynamicqrm.NumaMemCompactConfiguratio
 	// Apply the same guard as the AdminQoSConfiguration path so a misconfigured static flag cannot
 	// cause an idle NUMA node to be compacted too frequently.
 	c.NumaMemCompactInterval = dynamicqrm.ClampNumaMemCompactInterval(o.NumaMemCompactInterval)
+	c.Order9UnusableIndexDegradedThreshold = dynamicqrm.ClampOrder9UnusableIndexDegradedThreshold(
+		o.Order9UnusableIndexDegradedThreshold)
 	return nil
 }

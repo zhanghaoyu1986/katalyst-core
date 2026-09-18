@@ -33,21 +33,25 @@ func TestNumaMemCompactOptionsDefaultsAndFlags(t *testing.T) {
 	options := NewNumaMemCompactOptions()
 	as.False(options.EnableNumaMemCompact)
 	as.Equal(1800*time.Second, options.NumaMemCompactInterval)
+	as.Equal(5.0, options.Order9UnusableIndexDegradedThreshold)
 
 	fss := cliflag.NamedFlagSets{}
 	options.AddFlags(&fss)
 	fs := fss.FlagSet("memory_resource_plugin")
 	as.NotNil(fs.Lookup("qrm-memory-enable-numa-mem-compact"))
 	as.NotNil(fs.Lookup("qrm-memory-numa-mem-compact-interval"))
+	as.NotNil(fs.Lookup("qrm-memory-numa-mem-compact-order-9-unusable-index-degraded-threshold"))
 	as.NoError(fs.Parse([]string{
 		"--qrm-memory-enable-numa-mem-compact=true",
 		"--qrm-memory-numa-mem-compact-interval=3600s",
+		"--qrm-memory-numa-mem-compact-order-9-unusable-index-degraded-threshold=15.5",
 	}))
 
 	conf := dynamicqrm.NewNumaMemCompactConfiguration()
 	as.NoError(options.ApplyTo(conf))
 	as.True(conf.EnableNumaMemCompact)
 	as.Equal(3600*time.Second, conf.NumaMemCompactInterval)
+	as.Equal(15.5, conf.Order9UnusableIndexDegradedThreshold)
 }
 
 func TestNumaMemCompactOptionsClampAndDisable(t *testing.T) {
@@ -68,4 +72,16 @@ func TestNumaMemCompactOptionsClampAndDisable(t *testing.T) {
 	conf = dynamicqrm.NewNumaMemCompactConfiguration()
 	as.NoError(options.ApplyTo(conf))
 	as.Equal(time.Duration(0), conf.NumaMemCompactInterval)
+
+	options = NewNumaMemCompactOptions()
+	options.Order9UnusableIndexDegradedThreshold = -1
+	conf = dynamicqrm.NewNumaMemCompactConfiguration()
+	as.NoError(options.ApplyTo(conf))
+	as.Equal(0.0, conf.Order9UnusableIndexDegradedThreshold)
+
+	options = NewNumaMemCompactOptions()
+	options.Order9UnusableIndexDegradedThreshold = 101
+	conf = dynamicqrm.NewNumaMemCompactConfiguration()
+	as.NoError(options.ApplyTo(conf))
+	as.Equal(100.0, conf.Order9UnusableIndexDegradedThreshold)
 }

@@ -61,6 +61,40 @@ func withFakeProcFS(t *testing.T) string {
 	return root
 }
 
+func TestReadNumaUnusableIndex(t *testing.T) {
+	oldPath := UnusableIndexFilePath
+	UnusableIndexFilePath = filepath.Join(t.TempDir(), "unusable_index")
+	t.Cleanup(func() {
+		UnusableIndexFilePath = oldPath
+	})
+
+	content := "Node 0, zone DMA    0.000 0.000 0.000 0.000 0.000 0.000 0.000 0.000 0.000 0.100 0.200\n" +
+		"Node 0, zone Normal 0.000 0.000 0.000 0.000 0.000 0.000 0.000 0.000 0.000 0.867 0.900\n"
+	assert.NoError(t, os.WriteFile(UnusableIndexFilePath, []byte(content), 0o644))
+
+	unusableIndex, err := ReadNumaUnusableIndex(0, 9)
+	assert.NoError(t, err)
+	assert.InDelta(t, 86.7, unusableIndex, 0.001)
+
+	_, err = ReadNumaUnusableIndex(1, 9)
+	assert.Error(t, err)
+}
+
+func TestReadNumaFreeMemorySizeAtOrAboveOrder(t *testing.T) {
+	root := withFakeProcFS(t)
+	content := "Node 0, zone DMA    0 0 0 0 0 0 0 0 0 8 4\n" +
+		"Node 0, zone Normal 0 0 0 0 0 0 0 0 0 2 1\n"
+	assert.NoError(t, os.WriteFile(filepath.Join(root, "buddyinfo"), []byte(content), 0o644))
+
+	freeSize, err := ReadNumaFreeMemorySizeAtOrAboveOrder(0, 9)
+	assert.NoError(t, err)
+	expectedSize := uint64(os.Getpagesize()) * (uint64(2)*(uint64(1)<<9) + uint64(1)*(uint64(1)<<10))
+	assert.Equal(t, expectedSize, freeSize)
+
+	_, err = ReadNumaFreeMemorySizeAtOrAboveOrder(1, 9)
+	assert.Error(t, err)
+}
+
 func TestDiscoverNumaKcompactdPids(t *testing.T) {
 	root := withFakeProcFS(t)
 

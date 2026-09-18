@@ -17,6 +17,7 @@ limitations under the License.
 package qrm
 
 import (
+	"math"
 	"time"
 
 	"github.com/kubewharf/katalyst-core/pkg/config/agent/dynamic/crd"
@@ -30,27 +31,40 @@ type NumaMemCompactConfiguration struct {
 	// is independent of the fragmem feature, so both may take effect simultaneously.
 	EnableNumaMemCompact bool
 
-	// NumaMemCompactInterval controls how often a NUMA node is re-compacted while it stays idle,
-	// after the initial falling-edge compaction, until a business pod is scheduled onto it. A
-	// non-positive value disables periodic re-compaction (idle NUMA is compacted only once).
-	// Defaults to defaultNumaMemCompactInterval.
+	// NumaMemCompactInterval is the minimum interval between two actual compactions while a NUMA
+	// node stays idle. Once the interval has elapsed, order-9 readiness is checked on each handler
+	// cycle and the node is compacted only when its unusable-index increase from the
+	// post-compaction baseline exceeds the threshold. A non-positive value disables subsequent
+	// compaction until a business pod is scheduled onto the node and leaves again. Defaults to
+	// defaultNumaMemCompactInterval.
 	NumaMemCompactInterval time.Duration
+
+	// Order9UnusableIndexDegradedThreshold is the minimum increase from the post-compaction order-9
+	// unusable-index baseline that triggers another compaction after NumaMemCompactInterval.
+	// Defaults to defaultOrder9UnusableIndexDegradedThreshold.
+	Order9UnusableIndexDegradedThreshold float64
 }
 
-// defaultNumaMemCompactInterval is the default interval for periodic re-compaction of a NUMA node
-// that stays idle. It is used unless overridden by AdminQoSConfiguration.
+// defaultNumaMemCompactInterval is the default minimum interval between two actual compactions for
+// a NUMA node that stays idle. It is used unless overridden by AdminQoSConfiguration.
 const defaultNumaMemCompactInterval = 1800 * time.Second
 
-// minNumaMemCompactInterval is the lower bound for a positive re-compaction interval. A positive
+// minNumaMemCompactInterval is the lower bound for a positive compaction interval. A positive
 // configured interval smaller than this is clamped up to it, to guard against a misconfiguration
 // (e.g. a few seconds) that would cause an idle NUMA node to be compacted too frequently. A
-// non-positive interval is left as-is since it disables periodic re-compaction.
+// non-positive interval is left as-is since it disables subsequent compaction.
 const minNumaMemCompactInterval = 600 * time.Second
 
-// ClampNumaMemCompactInterval guards against a misconfigured re-compaction interval. A positive
-// but too-small interval is clamped up to minNumaMemCompactInterval so an idle NUMA node is not
-// compacted too frequently. A non-positive interval is returned as-is since it disables periodic
-// re-compaction. It is shared by the static-flag and AdminQoSConfiguration paths so both apply the
+const (
+	defaultOrder9UnusableIndexDegradedThreshold = 5.0
+	minOrder9UnusableIndexDegradedThreshold     = 0.0
+	maxOrder9UnusableIndexDegradedThreshold     = 100.0
+)
+
+// ClampNumaMemCompactInterval guards against a misconfigured compaction interval. A positive but
+// too-small interval is clamped up to minNumaMemCompactInterval so an idle NUMA node is not
+// compacted too frequently. A non-positive interval is returned as-is since it disables subsequent
+// compaction. It is shared by the static-flag and AdminQoSConfiguration paths so both apply the
 // same guard.
 func ClampNumaMemCompactInterval(interval time.Duration) time.Duration {
 	if interval > 0 && interval < minNumaMemCompactInterval {
@@ -59,9 +73,25 @@ func ClampNumaMemCompactInterval(interval time.Duration) time.Duration {
 	return interval
 }
 
+// ClampOrder9UnusableIndexDegradedThreshold keeps the threshold within the valid unusable-index
+// range. NaN falls back to the default value.
+func ClampOrder9UnusableIndexDegradedThreshold(threshold float64) float64 {
+	if math.IsNaN(threshold) {
+		return defaultOrder9UnusableIndexDegradedThreshold
+	}
+	if threshold < minOrder9UnusableIndexDegradedThreshold {
+		return minOrder9UnusableIndexDegradedThreshold
+	}
+	if threshold > maxOrder9UnusableIndexDegradedThreshold {
+		return maxOrder9UnusableIndexDegradedThreshold
+	}
+	return threshold
+}
+
 func NewNumaMemCompactConfiguration() *NumaMemCompactConfiguration {
 	return &NumaMemCompactConfiguration{
-		NumaMemCompactInterval: defaultNumaMemCompactInterval,
+		NumaMemCompactInterval:               defaultNumaMemCompactInterval,
+		Order9UnusableIndexDegradedThreshold: defaultOrder9UnusableIndexDegradedThreshold,
 	}
 }
 
@@ -77,6 +107,10 @@ func (c *NumaMemCompactConfiguration) ApplyConfiguration(conf *crd.DynamicConfig
 		if config.NumaMemCompactIntervalSeconds != nil {
 			c.NumaMemCompactInterval = ClampNumaMemCompactInterval(
 				time.Duration(*config.NumaMemCompactIntervalSeconds) * time.Second)
+		}
+		if config.Order9UnusableIndexDegradedThreshold != nil {
+			c.Order9UnusableIndexDegradedThreshold = ClampOrder9UnusableIndexDegradedThreshold(
+				*config.Order9UnusableIndexDegradedThreshold)
 		}
 	}
 }

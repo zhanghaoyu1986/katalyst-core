@@ -18,12 +18,14 @@ limitations under the License.
 */
 
 // Package compaction holds the node-level memory-compaction primitives shared by the memory
-// handlers (numacompact and fragmem): triggering a per-NUMA compaction via sysfs, discovering the
-// per-NUMA kcompactd kernel threads, and skipping a node whose kcompactd is currently busy.
+// handlers (numacompact and fragmem): reading per-NUMA fragmentation state, triggering compaction
+// via sysfs, discovering the per-NUMA kcompactd kernel threads, and skipping a node whose kcompactd
+// is currently busy.
 package compaction
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -46,6 +48,10 @@ const (
 var (
 	// ProcFSRoot is the procfs mount point. It is a variable so tests can point it at a fake tree.
 	ProcFSRoot = "/proc"
+
+	// UnusableIndexFilePath exposes the kernel's per-NUMA, per-zone external fragmentation data.
+	// It is a variable so tests can point it at a fake file.
+	UnusableIndexFilePath = "/sys/kernel/debug/extfrag/unusable_index"
 
 	// numaKcompactdPid maps a NUMA node id to the pid of its kcompactd kernel thread, whose comm is
 	// "kcompactd<numaID>". It is discovered once (see ensureNumaKcompactdPids) so that the per-cycle
@@ -89,6 +95,91 @@ func releaseNumaCompacting(numaID int) {
 func setHostMemCompact(node int) {
 	targetFile := hostMemNodePath + strconv.Itoa(node) + "/compact"
 	_ = os.WriteFile(targetFile, []byte(fmt.Sprintf("%d", 1)), 0o644)
+}
+
+// ReadNumaUnusableIndex reads the unusable index for the requested NUMA node, Normal zone, and
+// allocation order. The kernel exposes the index in [0, 1]; this function returns the percentage
+// form in [0, 100].
+func ReadNumaUnusableIndex(numaID, order int) (float64, error) {
+	data, err := os.ReadFile(UnusableIndexFilePath)
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", UnusableIndexFilePath, err)
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[0] != "Node" || fields[2] != "zone" || fields[3] != "Normal" {
+			continue
+		}
+
+		nodeID, err := strconv.Atoi(strings.TrimSuffix(fields[1], ","))
+		if err != nil || nodeID != numaID {
+			continue
+		}
+
+		if order < 0 {
+			return 0, fmt.Errorf("invalid negative order %d", order)
+		}
+		unusableIndexField := 4 + order
+		if unusableIndexField >= len(fields) {
+			return 0, fmt.Errorf("order %d is missing for NUMA %d Normal zone", order, numaID)
+		}
+
+		unusableIndex, err := strconv.ParseFloat(fields[unusableIndexField], 64)
+		if err != nil || math.IsNaN(unusableIndex) || math.IsInf(unusableIndex, 0) ||
+			unusableIndex < 0 || unusableIndex > 1 {
+			return 0, fmt.Errorf("invalid unusable index %q for NUMA %d order %d",
+				fields[unusableIndexField], numaID, order)
+		}
+		return unusableIndex * 100, nil
+	}
+
+	return 0, fmt.Errorf("NUMA %d Normal zone not found in %s", numaID, UnusableIndexFilePath)
+}
+
+// ReadNumaFreeMemorySizeAtOrAboveOrder reads /proc/buddyinfo and returns, in bytes, the total free
+// memory in the requested NUMA node's Normal zone whose buddy order is at least minOrder.
+func ReadNumaFreeMemorySizeAtOrAboveOrder(numaID, minOrder int) (uint64, error) {
+	if minOrder < 0 {
+		return 0, fmt.Errorf("invalid negative order %d", minOrder)
+	}
+
+	buddyInfoPath := filepath.Join(ProcFSRoot, "buddyinfo")
+	data, err := os.ReadFile(buddyInfoPath)
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", buddyInfoPath, err)
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[0] != "Node" || fields[2] != "zone" || fields[3] != "Normal" {
+			continue
+		}
+
+		nodeID, err := strconv.Atoi(strings.TrimSuffix(fields[1], ","))
+		if err != nil || nodeID != numaID {
+			continue
+		}
+
+		orderCounts := fields[4:]
+		if minOrder >= len(orderCounts) {
+			return 0, fmt.Errorf("order %d is missing for NUMA %d Normal zone", minOrder, numaID)
+		}
+
+		var freeSize uint64
+		pageSize := uint64(os.Getpagesize())
+		for order := minOrder; order < len(orderCounts); order++ {
+			blockCount, err := strconv.ParseUint(orderCounts[order], 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid free block count %q for NUMA %d order %d",
+					orderCounts[order], numaID, order)
+			}
+			freeSize += blockCount * pageSize * (uint64(1) << order)
+		}
+		return freeSize, nil
+	}
+
+	return 0, fmt.Errorf("NUMA %d Normal zone not found in %s", numaID, buddyInfoPath)
 }
 
 // discoverNumaKcompactdPids walks ProcFSRoot and records, per NUMA node, the pid of its kcompactd

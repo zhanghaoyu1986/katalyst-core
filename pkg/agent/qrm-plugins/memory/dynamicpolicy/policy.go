@@ -94,7 +94,7 @@ const (
 
 	// defaultNumaMemCompactPeriod is the fallback scanning period of the numacompact NumaMemCompact
 	// handler when no valid check interval is configured.
-	defaultNumaMemCompactPeriod = 30 * time.Second
+	defaultNumaMemCompactPeriod = 10 * time.Second
 
 	healthCheckTolerationTimes = 3
 

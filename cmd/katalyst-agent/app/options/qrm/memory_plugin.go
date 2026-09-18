@@ -129,7 +129,7 @@ func NewMemoryOptions() *MemoryOptions {
 			FileFilters:            []string{".*\\.log.*"},
 		},
 		NumaMemCompactOptions: NumaMemCompactOptions{
-			CheckInterval: time.Second * 30,
+			CheckInterval: time.Second * 10,
 		},
 		ResctrlOptions: ResctrlOptions{
 			EnableResctrlHint:                     false,

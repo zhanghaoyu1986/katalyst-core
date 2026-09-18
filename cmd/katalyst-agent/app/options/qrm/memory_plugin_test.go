@@ -18,12 +18,22 @@ package qrm
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	cliflag "k8s.io/component-base/cli/flag"
 
 	qrmconfig "github.com/kubewharf/katalyst-core/pkg/config/agent/qrm"
 )
+
+func TestNewMemoryOptionsDefaultsNumaMemCompact(t *testing.T) {
+	t.Parallel()
+
+	as := require.New(t)
+	o := NewMemoryOptions()
+
+	as.Equal(10*time.Second, o.CheckInterval)
+}
 
 func TestNewMemoryOptions_Defaults_LogCache(t *testing.T) {
 	t.Parallel()

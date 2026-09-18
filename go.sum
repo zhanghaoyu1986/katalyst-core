@@ -944,8 +944,8 @@ github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9dec
 github.com/yuin/goldmark v1.3.5/go.mod h1:mwnBkeHKe2W/ZEtQ+71ViKU8L12m81fl3OWwC1Zlc8k=
 github.com/yuin/goldmark v1.4.1/go.mod h1:mwnBkeHKe2W/ZEtQ+71ViKU8L12m81fl3OWwC1Zlc8k=
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
-github.com/zhanghaoyu1986/katalyst-api v0.0.0-20260915051624-182470a3050c h1:ZIffEMgbW4xOwfgmsB+UtJXawZd8+MBK9X9Kpszjkao=
-github.com/zhanghaoyu1986/katalyst-api v0.0.0-20260915051624-182470a3050c/go.mod h1:BZMVGVl3EP0eCn5xsDgV41/gjYkoh43abIYxrB10e3k=
+github.com/zhanghaoyu1986/katalyst-api v0.0.0-20260918025400-db35272fcff7 h1:zpj5cs8Ig40CB+VXjNvEn8md9i6cj0d1UgSs3Y/fFIA=
+github.com/zhanghaoyu1986/katalyst-api v0.0.0-20260918025400-db35272fcff7/go.mod h1:BZMVGVl3EP0eCn5xsDgV41/gjYkoh43abIYxrB10e3k=
 go.etcd.io/bbolt v1.3.2/go.mod h1:IbVyRI1SCnLcuJnV2u8VeU0CEYM7e686BmAb1XKL+uU=
 go.etcd.io/bbolt v1.3.3/go.mod h1:IbVyRI1SCnLcuJnV2u8VeU0CEYM7e686BmAb1XKL+uU=
 go.etcd.io/bbolt v1.3.6 h1:/ecaJf0sk1l4l6V4awd65v2C3ILy7MSj+s/x1ADCIMU=
