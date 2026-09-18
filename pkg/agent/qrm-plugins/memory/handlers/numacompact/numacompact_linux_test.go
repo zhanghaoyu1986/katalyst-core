@@ -747,8 +747,14 @@ func TestNumaMemCompactTaskDurationMetric(t *testing.T) {
 	numaMemCompactTaskMu.Unlock()
 	assert.False(t, compaction.TryCompactNUMANode(numaID))
 
+	// Completion reports the final duration even when no handler cycle occurs at that moment.
+	numaMemCompactTaskMu.Lock()
+	numaMemCompactTask.startedAt = time.Now().Add(-2 * time.Minute)
+	numaMemCompactTaskMu.Unlock()
 	release()
 	waitNumaMemCompactTask(t)
+	assert.GreaterOrEqual(t, emitter.intValue(metricNameNumaMemCompactTaskDurationSeconds), int64(120))
+	assert.Equal(t, "true", emitter.intTag(metricNameNumaMemCompactTaskDurationSeconds, "ongoing"))
 	assert.ElementsMatch(t, []int{0, 1}, *compacted)
 	assert.True(t, isNumaCompacted(0))
 	assert.True(t, isNumaCompacted(1))

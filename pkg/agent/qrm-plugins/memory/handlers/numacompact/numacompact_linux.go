@@ -388,6 +388,7 @@ func NumaMemCompact(conf *coreconfig.Configuration,
 		defer func() {
 			numaMemCompactTaskMu.Lock()
 			defer numaMemCompactTaskMu.Unlock()
+			reportNumaMemCompactTaskDuration(emitter)
 			// A write finishing after disable must not restore the previous idle-cycle baseline,
 			// even if the feature has already been re-enabled while that write was in flight.
 			if numaMemCompactTask.reset {
