@@ -1,3 +1,5 @@
+//go:build !linux
+
 /*
 Copyright 2022 The Katalyst Authors.
 
@@ -14,20 +16,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fragmem
+package numacompact
 
-const (
-	// Constants for fragmem related kernel features
-	hostCompactProactivenessFile = "/proc/sys/vm/compaction_proactiveness"
-
-	fragScoreMin      = 60.0
-	fragScoreMax      = 95.0
-	minFragScoreGap   = 8
-	delayCompactTimes = 10
-	sleepCompactTime  = 10
-	minHostLoad       = 100
+import (
+	coreconfig "github.com/kubewharf/katalyst-core/pkg/config"
+	dynamicconfig "github.com/kubewharf/katalyst-core/pkg/config/agent/dynamic"
+	"github.com/kubewharf/katalyst-core/pkg/metaserver"
+	"github.com/kubewharf/katalyst-core/pkg/metrics"
 )
 
-const (
-	metricNameMemoryCompaction = "async_handler_memory_compaction"
-)
+func NumaMemCompact(conf *coreconfig.Configuration,
+	_ interface{}, _ *dynamicconfig.DynamicAgentConfiguration,
+	emitter metrics.MetricEmitter, metaServer *metaserver.MetaServer) {
+}
