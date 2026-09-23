@@ -21,6 +21,6 @@ package machine
 
 import "runtime"
 
-func getMachineArchitecture() (string, error) {
+func getCPUArchitecture() (string, error) {
 	return runtime.GOARCH, nil
 }

@@ -40,7 +40,7 @@ import (
 func Test_GetCPUInfoWithTopo(t *testing.T) {
 	mockey.PatchConvey("Test GetCPUInfoWithTopo", t, func() {
 		mockey.Mock(os.Stat).Return(nil, nil).Build()
-		mockey.Mock(getMachineArchitecture).Return("amd64", nil).Build()
+		mockey.Mock(getCPUArchitecture).Return(cpuArchAMD64, nil).Build()
 		mockey.PatchConvey("Scenario 1: Successfully obtaining Intel CPU topology", func() {
 			// Arrange: Simulate an Intel CPU environment
 			mockey.MockValue(&cpuid.CPU.VendorID).To(cpuid.Intel)
@@ -111,7 +111,7 @@ func Test_GetCPUInfoWithTopo(t *testing.T) {
 
 		mockey.PatchConvey("Scenario 3: Successfully obtaining arm64 CPU topology", func() {
 			mockey.MockValue(&cpuid.CPU.VendorID).To(cpuid.VendorUnknown)
-			mockey.Mock(getMachineArchitecture).Return("arm64", nil).Build()
+			mockey.Mock(getCPUArchitecture).Return(cpuArchARM64, nil).Build()
 			mockNode0 := &mockDirEntry{entryName: "node0", isDir: true}
 			mockey.Mock(os.ReadDir).Return([]fs.DirEntry{mockNode0}, nil).Build()
 
@@ -139,7 +139,7 @@ func Test_GetCPUInfoWithTopo(t *testing.T) {
 
 		mockey.PatchConvey("Scenario 4: Unsupported CPU architecture is disabled", func() {
 			mockey.MockValue(&cpuid.CPU.VendorID).To(cpuid.VendorUnknown)
-			mockey.Mock(getMachineArchitecture).Return("ppc64le", nil).Build()
+			mockey.Mock(getCPUArchitecture).Return("ppc64le", nil).Build()
 
 			info, err := GetCPUInfoWithTopo()
 

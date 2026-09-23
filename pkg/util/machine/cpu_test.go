@@ -60,19 +60,19 @@ func TestNormalizePackageID(t *testing.T) {
 	assert.Equal(t, 2, normalizePackageID(2))
 }
 
-func TestNormalizeMachineArchitecture(t *testing.T) {
+func TestNormalizeCPUArchitecture(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
-		"x86_64":  "amd64",
-		"aarch64": "arm64",
-		"armv7l":  "arm",
-		"i686":    "386",
+		"x86_64":  cpuArchAMD64,
+		"aarch64": cpuArchARM64,
+		"armv7l":  cpuArchARM,
+		"i686":    cpuArch386,
 		"riscv64": "riscv64",
 	}
 
 	for machine, expected := range tests {
-		assert.Equal(t, expected, normalizeMachineArchitecture(machine))
+		assert.Equal(t, expected, normalizeCPUArchitecture(machine))
 	}
 }
 

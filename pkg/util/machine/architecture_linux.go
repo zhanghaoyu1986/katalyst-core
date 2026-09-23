@@ -24,7 +24,7 @@ import (
 	"syscall"
 )
 
-func getMachineArchitecture() (string, error) {
+func getCPUArchitecture() (string, error) {
 	var utsname syscall.Utsname
 	if err := syscall.Uname(&utsname); err != nil {
 		return "", fmt.Errorf("uname failed: %w", err)
@@ -38,5 +38,5 @@ func getMachineArchitecture() (string, error) {
 		machine = append(machine, byte(c))
 	}
 
-	return normalizeMachineArchitecture(string(machine)), nil
+	return normalizeCPUArchitecture(string(machine)), nil
 }

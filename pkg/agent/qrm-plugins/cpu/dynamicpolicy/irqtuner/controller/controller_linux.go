@@ -482,14 +482,13 @@ type IrqTuningController struct {
 	IrqAffinityChanges map[int]*IrqAffinityChange // nic ifindex as map key. used to record irq affinity changes in each periodicTuning, and will be reset at the beginning of periodicTuning
 }
 
-func fallbackUnsupportedIrqTuningPolicy(conf *config.IrqTuningConfig) (config.IrqTuningPolicy, bool) {
-	requestedPolicy := conf.IrqTuningPolicy
-	if conf.IrqTuningPolicy == config.IrqTuningAuto ||
-		conf.IrqTuningPolicy == config.IrqTuningIrqCoresExclusive {
-		conf.IrqTuningPolicy = config.IrqTuningBalanceFair
-		return requestedPolicy, true
+func validateIrqTuningPolicy(policy config.IrqTuningPolicy) error {
+	// TODO: exclusive and auto policy is not supported yet
+	if policy == config.IrqTuningAuto ||
+		policy == config.IrqTuningIrqCoresExclusive {
+		return fmt.Errorf("irq tuning policy %s is unsupported", policy)
 	}
-	return requestedPolicy, false
+	return nil
 }
 
 func useCCDBalance(vendor cpuid.Vendor) bool {
@@ -580,16 +579,7 @@ func NewIrqTuningController(agentConf *agent.AgentConfiguration, irqStateAdapter
 		}
 	}()
 
-	// get configuration from parameters
-	if agentConf.IRQTunerConfiguration != nil {
-		for _, rc := range agentConf.IRQTunerConfiguration.ForbiddenContainerRuntimeClass {
-			ForbiddenContainerRuntimeClass = append(ForbiddenContainerRuntimeClass, rc)
-		}
-		for _, anno := range agentConf.IRQTunerConfiguration.ForbiddenContainerRuntimeAnnotationKeys {
-			ForbiddenContainerRuntimeAnnotationKeys = append(ForbiddenContainerRuntimeAnnotationKeys, anno)
-		}
-		ForbiddenContainerRuntimeAnnotationsVal = agentConf.IRQTunerConfiguration.ForbiddenContainerRuntimeAnnotationsVal
-	} else {
+	if agentConf.IRQTunerConfiguration == nil {
 		general.Errorf("%s irqtuner configuration is nil", IrqTuningLogPrefix)
 		return nil, fmt.Errorf("invalid agent irqtuner configuration")
 	}
@@ -599,17 +589,22 @@ func NewIrqTuningController(agentConf *agent.AgentConfiguration, irqStateAdapter
 		general.Errorf("%s GetDynamicConfiguration return nil", IrqTuningLogPrefix)
 	}
 	conf := config.ConvertDynamicConfigToIrqTuningConfig(dynConf)
-	cpuInfo := machineInfo.CPUTopology.CPUInfo
-	requestedPolicy, fallback := fallbackUnsupportedIrqTuningPolicy(conf)
-	if fallback {
-		general.Errorf("%s irq tuning policy %s is unsupported, fallback to %s",
-			IrqTuningLogPrefix, requestedPolicy, conf.IrqTuningPolicy)
-		_ = emitter.StoreInt64(metricUtil.MetricNameIrqTuningErr, irqtuner.IrqTuningError, metrics.MetricTypeNameRaw,
-			metrics.MetricTag{Key: "reason", Val: irqtuner.UnsupportedIrqTuningPolicyFallback},
-			metrics.MetricTag{Key: "requested_policy", Val: string(requestedPolicy)},
-			metrics.MetricTag{Key: "effective_policy", Val: string(conf.IrqTuningPolicy)})
+	if err := validateIrqTuningPolicy(conf.IrqTuningPolicy); err != nil {
+		retErr = err
+		general.Errorf("%s %s", IrqTuningLogPrefix, err)
+		return nil, retErr
 	}
 
+	// get configuration from parameters
+	for _, rc := range agentConf.IRQTunerConfiguration.ForbiddenContainerRuntimeClass {
+		ForbiddenContainerRuntimeClass = append(ForbiddenContainerRuntimeClass, rc)
+	}
+	for _, anno := range agentConf.IRQTunerConfiguration.ForbiddenContainerRuntimeAnnotationKeys {
+		ForbiddenContainerRuntimeAnnotationKeys = append(ForbiddenContainerRuntimeAnnotationKeys, anno)
+	}
+	ForbiddenContainerRuntimeAnnotationsVal = agentConf.IRQTunerConfiguration.ForbiddenContainerRuntimeAnnotationsVal
+
+	cpuInfo := machineInfo.CPUTopology.CPUInfo
 	if cpuInfo == nil {
 		if cpuid.CPU.VendorID != cpuid.Intel && cpuid.CPU.VendorID != cpuid.AMD {
 			general.Infof("%s unsupported cpu vendor %s", IrqTuningLogPrefix, cpuid.CPU.VendorID)
@@ -5853,18 +5848,19 @@ func (ic *IrqTuningController) syncDynamicConfig() {
 	}
 
 	conf := config.ConvertDynamicConfigToIrqTuningConfig(dynConf)
-	requestedPolicy, fallback := fallbackUnsupportedIrqTuningPolicy(conf)
-	if fallback {
-		ic.emitErrMetric(irqtuner.UnsupportedIrqTuningPolicyFallback, irqtuner.IrqTuningError,
-			metrics.MetricTag{Key: "requested_policy", Val: string(requestedPolicy)},
-			metrics.MetricTag{Key: "effective_policy", Val: string(conf.IrqTuningPolicy)})
+	if err := validateIrqTuningPolicy(conf.IrqTuningPolicy); err != nil {
+		if ic.conf == nil {
+			ic.conf = config.ConvertDynamicConfigToIrqTuningConfig(nil)
+		}
+
+		ic.emitErrMetric(irqtuner.UnsupportedIrqTuningPolicy, irqtuner.IrqTuningError,
+			metrics.MetricTag{Key: "requested_policy", Val: string(conf.IrqTuningPolicy)})
+		general.Errorf("%s %s", IrqTuningLogPrefix, err)
+		return
 	}
+
 	configChanged := ic.conf == nil || !ic.conf.Equal(conf)
 	if configChanged {
-		if fallback {
-			general.Errorf("%s irq tuning policy %s is unsupported, fallback to %s",
-				IrqTuningLogPrefix, requestedPolicy, conf.IrqTuningPolicy)
-		}
 		general.Infof("%s new config: %s", IrqTuningLogPrefix, conf)
 	}
 

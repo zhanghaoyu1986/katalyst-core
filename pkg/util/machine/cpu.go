@@ -37,10 +37,14 @@ import (
 )
 
 const (
-	cpuInfoPath = "/proc/cpuinfo"
-	cpuSysDir   = "/sys/devices/system/cpu"
-	nodeSysDir  = "/sys/devices/system/node"
-	cpuStatFile = "/proc/stat"
+	cpuInfoPath  = "/proc/cpuinfo"
+	cpuSysDir    = "/sys/devices/system/cpu"
+	nodeSysDir   = "/sys/devices/system/node"
+	cpuStatFile  = "/proc/stat"
+	cpuArchAMD64 = "amd64"
+	cpuArchARM64 = "arm64"
+	cpuArch386   = "386"
+	cpuArchARM   = "arm"
 )
 
 var (
@@ -543,12 +547,12 @@ func GetCPUInfoWithTopo() (*CPUInfo, error) {
 		CPUOnline:  make(map[int64]bool),
 	}
 
-	architecture, err := getMachineArchitecture()
+	cpuArch, err := getCPUArchitecture()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get machine architecture, err %v", err)
+		return nil, fmt.Errorf("failed to get cpu architecture, err %v", err)
 	}
-	if architecture != "arm64" && cpuInfo.CPUVendor != cpuid.Intel && cpuInfo.CPUVendor != cpuid.AMD {
-		general.Infof("unsupported cpu vendor %s on architecture %s", cpuInfo.CPUVendor, architecture)
+	if cpuArch != cpuArchARM64 && cpuInfo.CPUVendor != cpuid.Intel && cpuInfo.CPUVendor != cpuid.AMD {
+		general.Infof("unsupported cpu vendor %s on architecture %s", cpuInfo.CPUVendor, cpuArch)
 		return nil, nil
 	}
 
@@ -564,7 +568,7 @@ func GetCPUInfoWithTopo() (*CPUInfo, error) {
 			return nil, fmt.Errorf("%s not exists", nodeCPUListFile)
 		}
 
-		if architecture == "arm64" || cpuInfo.CPUVendor == cpuid.Intel {
+		if cpuArch == cpuArchARM64 || cpuInfo.CPUVendor == cpuid.Intel {
 			numa, err := getNumaTopo(nodeCPUListFile)
 			if err != nil {
 				return nil, fmt.Errorf("getNumaTopo(%d), err %v", nodeID, err)
@@ -618,17 +622,17 @@ func GetCPUInfoWithTopo() (*CPUInfo, error) {
 	return cpuInfo, nil
 }
 
-func normalizeMachineArchitecture(machine string) string {
+func normalizeCPUArchitecture(machine string) string {
 	switch machine {
 	case "x86_64":
-		return "amd64"
+		return cpuArchAMD64
 	case "aarch64":
-		return "arm64"
+		return cpuArchARM64
 	case "i386", "i486", "i586", "i686":
-		return "386"
+		return cpuArch386
 	default:
 		if strings.HasPrefix(machine, "armv") {
-			return "arm"
+			return cpuArchARM
 		}
 		return machine
 	}

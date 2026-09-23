@@ -53,32 +53,28 @@ func (e *recordingMetricsEmitter) StoreInt64(key string, val int64, _ metrics.Me
 	return nil
 }
 
-func TestFallbackUnsupportedIrqTuningPolicy(t *testing.T) {
+func TestValidateIrqTuningPolicy(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		policy    config.IrqTuningPolicy
-		effective config.IrqTuningPolicy
-		fallback  bool
+		name    string
+		policy  config.IrqTuningPolicy
+		wantErr bool
 	}{
 		{
-			name:      "auto",
-			policy:    config.IrqTuningAuto,
-			effective: config.IrqTuningBalanceFair,
-			fallback:  true,
+			name:    "auto",
+			policy:  config.IrqTuningAuto,
+			wantErr: true,
 		},
 		{
-			name:      "exclusive",
-			policy:    config.IrqTuningIrqCoresExclusive,
-			effective: config.IrqTuningBalanceFair,
-			fallback:  true,
+			name:    "exclusive",
+			policy:  config.IrqTuningIrqCoresExclusive,
+			wantErr: true,
 		},
 		{
-			name:      "balance",
-			policy:    config.IrqTuningBalanceFair,
-			effective: config.IrqTuningBalanceFair,
-			fallback:  false,
+			name:    "balance",
+			policy:  config.IrqTuningBalanceFair,
+			wantErr: false,
 		},
 	}
 
@@ -86,39 +82,113 @@ func TestFallbackUnsupportedIrqTuningPolicy(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			conf := config.NewConfiguration()
-			conf.EnableIrqTuning = true
-			conf.IrqTuningPolicy = tt.policy
-
-			requested, fallback := fallbackUnsupportedIrqTuningPolicy(conf)
-
-			assert.Equal(t, tt.policy, requested)
-			assert.Equal(t, tt.fallback, fallback)
-			assert.True(t, conf.EnableIrqTuning)
-			assert.Equal(t, tt.effective, conf.IrqTuningPolicy)
+			err := validateIrqTuningPolicy(tt.policy)
+			if tt.wantErr {
+				assert.EqualError(t, err, fmt.Sprintf("irq tuning policy %s is unsupported", tt.policy))
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }
 
-func TestSyncDynamicConfigFallsBackUnsupportedPolicy(t *testing.T) {
+func TestNewIrqTuningControllerRejectsUnsupportedPolicy(t *testing.T) {
 	t.Parallel()
+
+	tests := []struct {
+		name   string
+		policy v1alpha1.TuningPolicy
+	}{
+		{name: "auto", policy: v1alpha1.TuningPolicyAuto},
+		{name: "exclusive", policy: v1alpha1.TuningPolicyExclusive},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			agentConf := agent.NewAgentConfiguration()
+			agentConf.GetDynamicConfiguration().IRQTuningConfiguration.TuningPolicy = tt.policy
+			emitter := &recordingMetricsEmitter{}
+
+			controller, err := NewIrqTuningController(agentConf, nil, emitter, nil)
+
+			assert.Nil(t, controller)
+			assert.EqualError(t, err, fmt.Sprintf("irq tuning policy %s is unsupported", tt.policy))
+			assert.Len(t, emitter.records, 1)
+			assert.Equal(t, irqtuner.NewIrqTuningControllerFailed, emitter.records[0].tags[0].Val)
+		})
+	}
+}
+
+func TestSyncDynamicConfigRejectsUnsupportedPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		dynamicPolicy   v1alpha1.TuningPolicy
+		requestedPolicy config.IrqTuningPolicy
+	}{
+		{
+			name:            "auto",
+			dynamicPolicy:   v1alpha1.TuningPolicyAuto,
+			requestedPolicy: config.IrqTuningAuto,
+		},
+		{
+			name:            "exclusive",
+			dynamicPolicy:   v1alpha1.TuningPolicyExclusive,
+			requestedPolicy: config.IrqTuningIrqCoresExclusive,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			agentConf := agent.NewAgentConfiguration()
+			agentConf.GetDynamicConfiguration().IRQTuningConfiguration.EnableTuner = true
+			agentConf.GetDynamicConfiguration().IRQTuningConfiguration.TuningPolicy = tt.dynamicPolicy
+			emitter := &recordingMetricsEmitter{}
+			oldConf := config.NewConfiguration()
+
+			controller := &IrqTuningController{
+				agentConf: agentConf,
+				conf:      oldConf,
+				emitter:   emitter,
+			}
+
+			controller.syncDynamicConfig()
+
+			assert.Same(t, oldConf, controller.conf)
+			assert.False(t, controller.conf.EnableIrqTuning)
+			assert.Equal(t, config.IrqTuningBalanceFair, controller.conf.IrqTuningPolicy)
+			assert.Len(t, emitter.records, 1)
+			assert.Equal(t, irqtuner.UnsupportedIrqTuningPolicy, emitter.records[0].tags[0].Val)
+			assert.Equal(t, string(tt.requestedPolicy), emitter.records[0].tags[1].Val)
+		})
+	}
+}
+
+func TestSyncDynamicConfigInitializesDefaultConfigForUnsupportedPolicy(t *testing.T) {
+	t.Parallel()
+
 	agentConf := agent.NewAgentConfiguration()
 	agentConf.GetDynamicConfiguration().IRQTuningConfiguration.EnableTuner = true
-	agentConf.GetDynamicConfiguration().IRQTuningConfiguration.TuningPolicy = v1alpha1.TuningPolicyExclusive
+	agentConf.GetDynamicConfiguration().IRQTuningConfiguration.TuningPolicy = v1alpha1.TuningPolicyAuto
 	emitter := &recordingMetricsEmitter{}
-
 	controller := &IrqTuningController{
 		agentConf: agentConf,
-		conf:      config.NewConfiguration(),
 		emitter:   emitter,
 	}
 
 	controller.syncDynamicConfig()
 
-	assert.True(t, controller.conf.EnableIrqTuning)
+	assert.NotNil(t, controller.conf)
+	assert.False(t, controller.conf.EnableIrqTuning)
 	assert.Equal(t, config.IrqTuningBalanceFair, controller.conf.IrqTuningPolicy)
 	assert.Len(t, emitter.records, 1)
-	assert.Equal(t, irqtuner.UnsupportedIrqTuningPolicyFallback, emitter.records[0].tags[0].Val)
+	assert.Equal(t, irqtuner.UnsupportedIrqTuningPolicy, emitter.records[0].tags[0].Val)
+	assert.Equal(t, string(config.IrqTuningAuto), emitter.records[0].tags[1].Val)
 }
 
 func TestUseCCDBalance(t *testing.T) {
