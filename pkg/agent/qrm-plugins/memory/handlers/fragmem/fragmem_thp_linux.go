@@ -55,6 +55,10 @@ var thpEnabledPath = procfsm.TransparentHugepageEnabledPath
 // It is a var (not const) so tests can override it with a temp file.
 var thpShmemEnabledPath = procfsm.TransparentHugepageShmemEnabledPath
 
+// thpDefragPath is the sysfs path for the THP defrag policy.
+// It is a var (not const) so tests can override it with a temp file.
+var thpDefragPath = procfsm.TransparentHugepageDefragPath
+
 // minFreeKbytesPath is the procfs path for vm.min_free_kbytes.
 // It is a var (not const) so tests can override it with a temp file.
 var minFreeKbytesPath = procfsm.VMMinFreeKbytesPath
@@ -71,7 +75,7 @@ const (
 	thpDecisionEnable
 )
 
-// SetMemTHP periodically tunes host THP based on high-order extfrag scores.
+// SetMemTHP periodically applies the defrag policy and tunes host THP modes.
 func SetMemTHP(conf *coreconfig.Configuration,
 	_ interface{}, dynamicConf *dynamicconfig.DynamicAgentConfiguration,
 	emitter metrics.MetricEmitter, metaServer *metaserver.MetaServer,
@@ -99,6 +103,11 @@ func SetMemTHP(conf *coreconfig.Configuration,
 	}
 	general.Infof("SetMemTHP: EnableFragMem enabled")
 
+	// Defrag policy is independent of static and fragmentation-based THP mode tuning.
+	if err := setTHPDefragPolicyAtPath(thpDefragPath, fragMemConf.THPDefragPolicy); err != nil {
+		errList = append(errList, err)
+	}
+
 	if enabled, thpMode, thpShmMode := getStaticTHPModes(fragMemConf); enabled {
 		general.Infof("SetMemTHP: static THP config enabled, thp=%s thpShm=%s", thpMode, thpShmMode)
 		if err := setTHPMode(thpMode, thpShmMode); err != nil {
@@ -108,9 +117,9 @@ func SetMemTHP(conf *coreconfig.Configuration,
 	}
 
 	mode := fragMemConf.THPDefaultConfig
-	// If THPDefaultConfig is empty, skip THP tuning entirely.
+	// If THPDefaultConfig is empty, skip THP mode tuning.
 	if mode == "" {
-		general.Infof("SetMemTHP skipped: THPDefaultConfig is empty")
+		general.Infof("SetMemTHP: skip THP mode tuning, THPDefaultConfig is empty")
 		return
 	}
 	// If THPDefaultConfig is "never", fast-path to disable THP directly.
@@ -263,7 +272,7 @@ func setTHPModeAtPathIfExists[T ~string](path string, mode T) error {
 	return err
 }
 
-func setTHPModeAtPath[T ~string](path string, mode T) (retErr error) {
+func setTHPModeAtPath[T ~string](path string, mode T) error {
 	normalizedMode := normalizeTHPMode(mode)
 	normalizedModeStr := string(normalizedMode)
 	if !isValidTHPMode(normalizedModeStr) {
@@ -273,9 +282,24 @@ func setTHPModeAtPath[T ~string](path string, mode T) (retErr error) {
 			apiconfig.THPModeMadvise, apiconfig.THPModeAlways, apiconfig.THPModeNever)
 	}
 
+	return writeTHPSettingAtPath(path, normalizedModeStr)
+}
+
+func setTHPDefragPolicyAtPath(path string, policy dynamicqrm.THPDefragPolicy) error {
+	normalizedPolicy, err := dynamicqrm.ParseTHPDefragPolicy(string(policy))
+	if err != nil {
+		return err
+	}
+
+	return writeTHPSettingAtPath(path, string(normalizedPolicy))
+}
+
+// writeTHPSettingAtPath writes a validated value, preserving idempotence and
+// the existing vm.min_free_kbytes handling when changing the THP enabled mode.
+func writeTHPSettingAtPath(path, value string) (retErr error) {
 	content, err := procfsm.ReadFileNoStat(path)
 	if err != nil {
-		return fmt.Errorf("read THP enabled file %s failed: %w", path, err)
+		return fmt.Errorf("read THP setting file %s failed: %w", path, err)
 	}
 	contentStr := string(content)
 	current := strings.TrimSpace(contentStr)
@@ -283,12 +307,12 @@ func setTHPModeAtPath[T ~string](path string, mode T) (retErr error) {
 	// Avoid redundant writes:
 	// - Typical sysfs format: "always [madvise] never"
 	// - Our unit tests may use plain "madvise"/"never" content.
-	if current == normalizedModeStr || strings.Contains(contentStr, fmt.Sprintf("[%s]", normalizedModeStr)) {
-		general.Infof("THP already in %s, skip writing %q to %s", normalizedMode, normalizedMode, path)
+	if current == value || strings.Contains(contentStr, fmt.Sprintf("[%s]", value)) {
+		general.Infof("THP setting already %q, skip writing to %s", value, path)
 		return nil
 	}
 
-	if shouldPreserveMinFreeKbytes(path, normalizedModeStr) {
+	if shouldPreserveMinFreeKbytes(path, value) {
 		restoreMinFreeKbytes, err := saveMinFreeKbytes()
 		if err != nil {
 			return err
@@ -304,17 +328,17 @@ func setTHPModeAtPath[T ~string](path string, mode T) (retErr error) {
 		}()
 	}
 
-	if err := applyTHPModeAtPath(path, normalizedModeStr); err != nil {
-		return fmt.Errorf("set THP mode failed, write %q to %s: %w", normalizedMode, path, err)
+	if err := applyTHPModeAtPath(path, value); err != nil {
+		return fmt.Errorf("set THP setting failed, write %q to %s: %w", value, path, err)
 	}
 
 	// Best-effort verify; sysfs content may vary, so only log on unexpected.
 	newContent, rerr := procfsm.ReadFileNoStat(path)
-	if rerr == nil && len(newContent) > 0 && !strings.Contains(string(newContent), normalizedModeStr) {
-		return fmt.Errorf("set THP mode verification failed: wrote=%q path=%s content=%q", normalizedMode, path, strings.TrimSpace(string(newContent)))
+	if rerr == nil && len(newContent) > 0 && !strings.Contains(string(newContent), value) {
+		return fmt.Errorf("set THP setting verification failed: wrote=%q path=%s content=%q", value, path, strings.TrimSpace(string(newContent)))
 	}
 
-	general.Infof("THP set to %s by writing %q to %s", normalizedMode, normalizedMode, path)
+	general.Infof("THP setting set to %q at %s", value, path)
 	return nil
 }
 

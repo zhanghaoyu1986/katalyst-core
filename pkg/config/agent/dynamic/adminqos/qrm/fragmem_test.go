@@ -25,6 +25,48 @@ import (
 	"github.com/kubewharf/katalyst-core/pkg/config/agent/dynamic/crd"
 )
 
+func TestParseTHPDefragPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		want    THPDefragPolicy
+		wantErr bool
+	}{
+		{name: "always", input: "always", want: THPDefragPolicyAlways},
+		{name: "defer", input: "defer", want: THPDefragPolicyDefer},
+		{name: "defer madvise", input: "defer+madvise", want: THPDefragPolicyDeferMadvise},
+		{name: "madvise", input: "madvise", want: THPDefragPolicyMadvise},
+		{name: "never", input: "never", want: THPDefragPolicyNever},
+		{name: "normalize", input: " Defer+Madvise \n", want: THPDefragPolicyDeferMadvise},
+		{name: "empty defaults to defer", want: THPDefragPolicyDefer},
+		{name: "whitespace defaults to defer", input: " \t\n", want: THPDefragPolicyDefer},
+		{name: "reject shmem force", input: "force", wantErr: true},
+		{name: "reject shmem deny", input: "deny", wantErr: true},
+		{name: "reject shmem advise", input: "advise", wantErr: true},
+		{name: "reject shmem within_size", input: "within_size", wantErr: true},
+		{name: "reject unknown policy", input: "invalid", wantErr: true},
+		{name: "reject internal spaces", input: "defer + madvise", wantErr: true},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := ParseTHPDefragPolicy(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "invalid THP defrag policy")
+				require.Empty(t, got)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestFragMemConfigurationApplyConfiguration(t *testing.T) {
 	t.Parallel()
 

@@ -492,6 +492,7 @@ func TestDynamicConfigManager_updateConfigPreservesFragMemDefaults(t *testing.T)
 	conf.GetDynamicConfiguration().FragMemConfiguration.MemFragScoreAsync = 80
 	conf.GetDynamicConfiguration().FragMemConfiguration.THPDefaultConfig = v1alpha1.THPModeMadvise
 	conf.GetDynamicConfiguration().FragMemConfiguration.THPHighOrderScoreThreshold = 85
+	conf.GetDynamicConfiguration().FragMemConfiguration.THPDefragPolicy = "defer"
 
 	cncFetcher := cnc.NewCachedCNCFetcher(conf.BaseConfiguration, conf.CNCConfiguration,
 		clientSet.InternalClient.ConfigV1alpha1().CustomNodeConfigs())
@@ -516,6 +517,7 @@ func TestDynamicConfigManager_updateConfigPreservesFragMemDefaults(t *testing.T)
 	require.Equal(t, 80, got.MemFragScoreAsync)
 	require.Equal(t, v1alpha1.THPModeMadvise, got.THPDefaultConfig)
 	require.Equal(t, 85, got.THPHighOrderScoreThreshold)
+	require.Equal(t, "defer", string(got.THPDefragPolicy))
 }
 
 func Test_getGVRToKindMap(t *testing.T) {

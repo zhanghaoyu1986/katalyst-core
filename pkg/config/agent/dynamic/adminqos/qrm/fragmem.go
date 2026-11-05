@@ -17,6 +17,7 @@ limitations under the License.
 package qrm
 
 import (
+	"fmt"
 	"strings"
 
 	apiconfig "github.com/kubewharf/katalyst-api/pkg/apis/config/v1alpha1"
@@ -24,12 +25,43 @@ import (
 	"github.com/kubewharf/katalyst-core/pkg/config/agent/dynamic/crd"
 )
 
+type THPDefragPolicy string
+
+const (
+	THPDefragPolicyAlways       THPDefragPolicy = "always"
+	THPDefragPolicyDefer        THPDefragPolicy = "defer"
+	THPDefragPolicyDeferMadvise THPDefragPolicy = "defer+madvise"
+	THPDefragPolicyMadvise      THPDefragPolicy = "madvise"
+	THPDefragPolicyNever        THPDefragPolicy = "never"
+)
+
+// ParseTHPDefragPolicy normalizes and validates a THP defrag policy.
+// An empty policy uses the default, defer.
+func ParseTHPDefragPolicy(policy string) (THPDefragPolicy, error) {
+	normalizedPolicy := THPDefragPolicy(strings.TrimSpace(strings.ToLower(policy)))
+	if normalizedPolicy == "" {
+		return THPDefragPolicyDefer, nil
+	}
+
+	switch normalizedPolicy {
+	case THPDefragPolicyAlways, THPDefragPolicyDefer, THPDefragPolicyDeferMadvise,
+		THPDefragPolicyMadvise, THPDefragPolicyNever:
+		return normalizedPolicy, nil
+	default:
+		return "", fmt.Errorf("invalid THP defrag policy %q, expected one of %q/%q/%q/%q/%q", policy,
+			THPDefragPolicyAlways, THPDefragPolicyDefer, THPDefragPolicyDeferMadvise,
+			THPDefragPolicyMadvise, THPDefragPolicyNever)
+	}
+}
+
 type FragMemConfiguration struct {
 	EnableFragMem              bool
 	MemFragScoreAsync          int
 	THPDefaultConfig           apiconfig.THPMode
 	THPHighOrderScoreThreshold int
 	THPStaticEnableConfig      *THPStaticEnableConfiguration
+	// THPDefragPolicy is applied whenever EnableFragMem is true, independently of THP mode tuning.
+	THPDefragPolicy THPDefragPolicy
 }
 
 type THPStaticEnableConfiguration struct {
