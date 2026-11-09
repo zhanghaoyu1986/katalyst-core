@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 
 	apiconfig "github.com/kubewharf/katalyst-api/pkg/apis/config/v1alpha1"
@@ -123,12 +124,21 @@ func TestSetMemTHP(t *testing.T) {
 
 	general.RegisterReportCheck(memconsts.SetMemTHP, 0, general.HealthzCheckStateNotReady)
 
+	oldDefragPath := thpDefragPath
+	defragFile := createTempFile(t, "always defer defer+madvise madvise [never]\n")
+	defer os.Remove(defragFile)
+	defer func() { thpDefragPath = oldDefragPath }()
+	thpDefragPath = defragFile
+
 	conf, dynamicConf := makeFragMemCoreConf(false, 0)
 	SetMemTHP(conf, nil, dynamicConf, nil, nil)
 
-	// THPDefaultConfig empty: skip THP tuning entirely.
+	// THPDefaultConfig empty: apply defrag policy and skip THP mode tuning.
 	conf, dynamicConf = makeTHPConf(apiconfig.THPMode(""), 85)
 	SetMemTHP(conf, nil, dynamicConf, nil, nil)
+	content, err := os.ReadFile(defragFile)
+	assert.NoError(t, err)
+	assert.Equal(t, "defer\n", string(content))
 
 	// THPDefaultConfig=never: fast-path to disable THP directly.
 	oldEnabledPath := thpEnabledPath
@@ -167,11 +177,23 @@ func TestSetMemTHP_HotUpdateEnableFragMem(t *testing.T) {
 	defer setMemTHPTestMu.Unlock()
 
 	oldPath := thpEnabledPath
-	defer func() { thpEnabledPath = oldPath }()
+	oldShmemPath := thpShmemEnabledPath
+	oldDefragPath := thpDefragPath
+	defer func() {
+		thpEnabledPath = oldPath
+		thpShmemEnabledPath = oldShmemPath
+		thpDefragPath = oldDefragPath
+	}()
 
 	thpFile := createTempFile(t, "always [madvise] never\n")
+	shmemFile := createTempFile(t, "always within_size [advise] never deny force\n")
+	defragFile := createTempFile(t, "[always] defer defer+madvise madvise never\n")
 	defer os.Remove(thpFile)
+	defer os.Remove(shmemFile)
+	defer os.Remove(defragFile)
 	thpEnabledPath = thpFile
+	thpShmemEnabledPath = shmemFile
+	thpDefragPath = defragFile
 
 	conf, dynamicConf := makeFragMemCoreConf(false, 0)
 	dynamicConf.GetDynamicConfiguration().FragMemConfiguration.THPDefaultConfig = apiconfig.THPModeNever
@@ -181,6 +203,9 @@ func TestSetMemTHP_HotUpdateEnableFragMem(t *testing.T) {
 	content, err := os.ReadFile(thpFile)
 	assert.NoError(t, err)
 	assert.Equal(t, "always [madvise] never\n", string(content))
+	content, err = os.ReadFile(defragFile)
+	assert.NoError(t, err)
+	assert.Equal(t, "[always] defer defer+madvise madvise never\n", string(content))
 
 	updatedConf := dynamicconfig.NewConfiguration()
 	updatedConf.FragMemConfiguration.EnableFragMem = true
@@ -192,6 +217,119 @@ func TestSetMemTHP_HotUpdateEnableFragMem(t *testing.T) {
 	content, err = os.ReadFile(thpFile)
 	assert.NoError(t, err)
 	assert.Equal(t, "never\n", string(content))
+	content, err = os.ReadFile(defragFile)
+	assert.NoError(t, err)
+	assert.Equal(t, "defer\n", string(content))
+}
+
+func TestSetMemTHPDefragWithoutStaticTHP(t *testing.T) {
+	t.Parallel()
+
+	setMemTHPTestMu.Lock()
+	defer setMemTHPTestMu.Unlock()
+
+	oldEnabledPath := thpEnabledPath
+	oldShmemPath := thpShmemEnabledPath
+	oldDefragPath := thpDefragPath
+	defer func() {
+		thpEnabledPath = oldEnabledPath
+		thpShmemEnabledPath = oldShmemPath
+		thpDefragPath = oldDefragPath
+	}()
+
+	const initialTHP = "always [madvise] never\n"
+	const initialShmem = "always within_size [advise] never deny force\n"
+	disabledStaticConfig := &dynamicqrm.THPStaticEnableConfiguration{
+		Enable: false,
+		THP:    apiconfig.THPModeAlways,
+		THPShm: apiconfig.THPShmModeForce,
+	}
+	tests := []struct {
+		name         string
+		staticConfig *dynamicqrm.THPStaticEnableConfiguration
+		defaultMode  apiconfig.THPMode
+		policy       apiconfig.THPDefragPolicy
+		wantDefrag   string
+		wantTHP      string
+		wantShmem    string
+	}{
+		{
+			name:       "default policy without static config",
+			wantDefrag: "defer\n",
+			wantTHP:    initialTHP,
+			wantShmem:  initialShmem,
+		},
+		{
+			name:       "custom policy without static config",
+			policy:     apiconfig.THPDefragPolicyNever,
+			wantDefrag: "never\n",
+			wantTHP:    initialTHP,
+			wantShmem:  initialShmem,
+		},
+		{
+			name:         "default policy with static config disabled",
+			staticConfig: disabledStaticConfig,
+			wantDefrag:   "defer\n",
+			wantTHP:      initialTHP,
+			wantShmem:    initialShmem,
+		},
+		{
+			name:         "custom policy with static config disabled",
+			staticConfig: disabledStaticConfig,
+			policy:       apiconfig.THPDefragPolicyDeferMadvise,
+			wantDefrag:   "defer+madvise\n",
+			wantTHP:      initialTHP,
+			wantShmem:    initialShmem,
+		},
+		{
+			name:         "defrag policy and fragmentation-based tuning",
+			staticConfig: disabledStaticConfig,
+			defaultMode:  apiconfig.THPModeMadvise,
+			policy:       apiconfig.THPDefragPolicyNever,
+			wantDefrag:   "never\n",
+			wantTHP:      "never\n",
+			wantShmem:    "deny\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			thpFile := createTempFile(t, initialTHP)
+			shmemFile := createTempFile(t, initialShmem)
+			defragFile := createTempFile(t, "[always] defer defer+madvise madvise never\n")
+			defer os.Remove(thpFile)
+			defer os.Remove(shmemFile)
+			defer os.Remove(defragFile)
+			thpEnabledPath = thpFile
+			thpShmemEnabledPath = shmemFile
+			thpDefragPath = defragFile
+
+			conf, dynamicConf := makeTHPConf(tt.defaultMode, 85)
+			fragMemConf := dynamicConf.GetDynamicConfiguration().FragMemConfiguration
+			fragMemConf.THPStaticEnableConfig = tt.staticConfig
+			fragMemConf.THPDefragPolicy = tt.policy
+
+			metaServer, err := makeMetaServer()
+			if !assert.NoError(t, err) {
+				return
+			}
+			mf := metaServer.MetricsFetcher.(*metric.FakeMetricsFetcher)
+			now := time.Now()
+			mf.SetNumaMetric(0, consts.MetricMemFragHighOrderScoreNuma, utilmetric.MetricData{Value: 90, Time: &now})
+			mf.SetNumaMetric(1, consts.MetricMemFragHighOrderScoreNuma, utilmetric.MetricData{Value: 10, Time: &now})
+
+			SetMemTHP(conf, nil, dynamicConf, metrics.DummyMetrics{}, metaServer)
+
+			for path, want := range map[string]string{
+				defragFile: tt.wantDefrag,
+				thpFile:    tt.wantTHP,
+				shmemFile:  tt.wantShmem,
+			} {
+				content, err := os.ReadFile(path)
+				assert.NoError(t, err)
+				assert.Equal(t, want, string(content), path)
+			}
+		})
+	}
 }
 
 func TestSetMemTHPStaticEnableConfig(t *testing.T) {
@@ -202,24 +340,31 @@ func TestSetMemTHPStaticEnableConfig(t *testing.T) {
 
 	oldEnabledPath := thpEnabledPath
 	oldShmemPath := thpShmemEnabledPath
+	oldDefragPath := thpDefragPath
 	defer func() {
 		thpEnabledPath = oldEnabledPath
 		thpShmemEnabledPath = oldShmemPath
+		thpDefragPath = oldDefragPath
 	}()
 
 	thpFile := createTempFile(t, "always [madvise] never\n")
 	shmemFile := createTempFile(t, "always within_size [advise] never deny force\n")
+	defragFile := createTempFile(t, "always [defer] defer+madvise madvise never\n")
 	defer os.Remove(thpFile)
 	defer os.Remove(shmemFile)
+	defer os.Remove(defragFile)
 	thpEnabledPath = thpFile
 	thpShmemEnabledPath = shmemFile
+	thpDefragPath = defragFile
 
 	conf, dynamicConf := makeTHPConf(apiconfig.THPModeMadvise, 85)
-	dynamicConf.GetDynamicConfiguration().FragMemConfiguration.THPStaticEnableConfig = &dynamicqrm.THPStaticEnableConfiguration{
+	fragMemConf := dynamicConf.GetDynamicConfiguration().FragMemConfiguration
+	fragMemConf.THPStaticEnableConfig = &dynamicqrm.THPStaticEnableConfiguration{
 		Enable: true,
 		THP:    apiconfig.THPModeAlways,
 		THPShm: apiconfig.THPShmModeForce,
 	}
+	fragMemConf.THPDefragPolicy = apiconfig.THPDefragPolicyDeferMadvise
 
 	SetMemTHP(conf, nil, dynamicConf, nil, nil)
 
@@ -230,6 +375,10 @@ func TestSetMemTHPStaticEnableConfig(t *testing.T) {
 	content, err = os.ReadFile(shmemFile)
 	assert.NoError(t, err)
 	assert.Equal(t, "force\n", string(content))
+
+	content, err = os.ReadFile(defragFile)
+	assert.NoError(t, err)
+	assert.Equal(t, "defer+madvise\n", string(content))
 }
 
 func TestSetMemTHPNilConf(t *testing.T) {
@@ -248,6 +397,12 @@ func TestSetMemTHPNilEmitter(t *testing.T) {
 	setMemTHPTestMu.Lock()
 	defer setMemTHPTestMu.Unlock()
 
+	oldDefragPath := thpDefragPath
+	defragFile := createTempFile(t, "always [defer] defer+madvise madvise never\n")
+	defer os.Remove(defragFile)
+	defer func() { thpDefragPath = oldDefragPath }()
+	thpDefragPath = defragFile
+
 	general.RegisterReportCheck(memconsts.SetMemTHP, 0, general.HealthzCheckStateNotReady)
 	conf, dynamicConf := makeTHPConf(apiconfig.THPModeMadvise, 85)
 	SetMemTHP(conf, nil, dynamicConf, nil, &metaserver.MetaServer{})
@@ -258,6 +413,12 @@ func TestSetMemTHPNilMetaServer(t *testing.T) {
 
 	setMemTHPTestMu.Lock()
 	defer setMemTHPTestMu.Unlock()
+
+	oldDefragPath := thpDefragPath
+	defragFile := createTempFile(t, "always [defer] defer+madvise madvise never\n")
+	defer os.Remove(defragFile)
+	defer func() { thpDefragPath = oldDefragPath }()
+	thpDefragPath = defragFile
 
 	general.RegisterReportCheck(memconsts.SetMemTHP, 0, general.HealthzCheckStateNotReady)
 	conf, dynamicConf := makeTHPConf(apiconfig.THPModeMadvise, 85)
@@ -613,7 +774,11 @@ func TestSetTHPModeAtPathSupportsAllShmemModes(t *testing.T) {
 		apiconfig.THPShmModeDeny,
 		apiconfig.THPShmModeForce,
 	} {
-		f := createTempFile(t, "always within_size advise never deny force\n")
+		initial := "always within_size advise [never] deny force\n"
+		if mode == apiconfig.THPShmModeNever {
+			initial = "always within_size [advise] never deny force\n"
+		}
+		f := createTempFile(t, initial)
 		err := setTHPModeAtPath(f, mode)
 		assert.NoError(t, err, string(mode))
 		b, rerr := os.ReadFile(f)
@@ -636,10 +801,221 @@ func TestSetTHPModeAtPathInvalid(t *testing.T) {
 	setMemTHPTestMu.Lock()
 	defer setMemTHPTestMu.Unlock()
 
-	f := createTempFile(t, "always [madvise] never\n")
-	defer os.Remove(f)
-	err := setTHPModeAtPath(f, "invalid")
-	assert.Error(t, err)
+	for _, mode := range []string{"invalid", "defer", "defer+madvise"} {
+		t.Run(mode, func(t *testing.T) {
+			const initial = "always [madvise] never\n"
+			f := createTempFile(t, initial)
+			defer os.Remove(f)
+
+			err := setTHPModeAtPath(f, mode)
+			if assert.Error(t, err) {
+				assert.Contains(t, err.Error(), "invalid THP mode")
+			}
+			content, err := os.ReadFile(f)
+			assert.NoError(t, err)
+			assert.Equal(t, initial, string(content))
+		})
+	}
+}
+
+func TestSetTHPDefragPolicyAtPath(t *testing.T) {
+	t.Parallel()
+
+	setMemTHPTestMu.Lock()
+	defer setMemTHPTestMu.Unlock()
+
+	const initial = "[always] defer defer+madvise madvise never\n"
+	tests := []struct {
+		name    string
+		policy  apiconfig.THPDefragPolicy
+		want    string
+		wantErr bool
+	}{
+		{name: "already always", policy: apiconfig.THPDefragPolicyAlways, want: initial},
+		{name: "defer", policy: apiconfig.THPDefragPolicyDefer, want: "defer\n"},
+		{name: "defer madvise", policy: apiconfig.THPDefragPolicyDeferMadvise, want: "defer+madvise\n"},
+		{name: "madvise", policy: apiconfig.THPDefragPolicyMadvise, want: "madvise\n"},
+		{name: "never", policy: apiconfig.THPDefragPolicyNever, want: "never\n"},
+		{name: "empty defaults to defer", want: "defer\n"},
+		{name: "normalize", policy: " Defer+Madvise ", want: "defer+madvise\n"},
+		{name: "reject force", policy: "force", want: initial, wantErr: true},
+		{name: "reject deny", policy: "deny", want: initial, wantErr: true},
+		{name: "reject advise", policy: "advise", want: initial, wantErr: true},
+		{name: "reject within_size", policy: "within_size", want: initial, wantErr: true},
+		{name: "reject unknown policy", policy: "invalid", want: initial, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := createTempFile(t, initial)
+			defer os.Remove(f)
+
+			err := setTHPDefragPolicyAtPath(f, tt.policy)
+			if tt.wantErr {
+				if assert.Error(t, err) {
+					assert.Contains(t, err.Error(), "invalid THP defrag policy")
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+			content, err := os.ReadFile(f)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, string(content))
+		})
+	}
+}
+
+func TestSetTHPDefragPolicyAtPathDoesNotRestoreMinFreeKbytes(t *testing.T) {
+	t.Parallel()
+
+	setMemTHPTestMu.Lock()
+	defer setMemTHPTestMu.Unlock()
+
+	oldMinFreeKbytesPath := minFreeKbytesPath
+	oldApplyTHPModeAtPath := applyTHPModeAtPath
+	defer func() {
+		minFreeKbytesPath = oldMinFreeKbytesPath
+		applyTHPModeAtPath = oldApplyTHPModeAtPath
+	}()
+
+	defragFile := createTempFile(t, "always [defer] defer+madvise madvise never\n")
+	minFreeFile := createTempFile(t, "12345\n")
+	defer os.Remove(defragFile)
+	defer os.Remove(minFreeFile)
+	minFreeKbytesPath = minFreeFile
+	applyTHPModeAtPath = func(path, value string) error {
+		if err := os.WriteFile(path, []byte(value+"\n"), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(minFreeFile, []byte("54321\n"), 0o644)
+	}
+
+	err := setTHPDefragPolicyAtPath(defragFile, apiconfig.THPDefragPolicyMadvise)
+	assert.NoError(t, err)
+	content, err := os.ReadFile(minFreeFile)
+	assert.NoError(t, err)
+	assert.Equal(t, "54321\n", string(content), "defrag writes must not restore vm.min_free_kbytes")
+}
+
+func TestWriteTHPSettingAtPathVerification(t *testing.T) {
+	t.Parallel()
+
+	setMemTHPTestMu.Lock()
+	defer setMemTHPTestMu.Unlock()
+
+	oldApply := applyTHPModeAtPath
+	defer func() { applyTHPModeAtPath = oldApply }()
+
+	const initial = "[always] defer defer+madvise madvise never\n"
+	tests := []struct {
+		name       string
+		before     string
+		after      string
+		writeErr   error
+		remove     bool
+		wantWrites int
+		wantErr    string
+	}{
+		{name: "bracketed selection", before: initial, after: "always [defer] defer+madvise madvise never\n", wantWrites: 1},
+		{name: "bare value", before: initial, after: "defer\n", wantWrites: 1},
+		{name: "bracketed idempotence", before: "always [defer] defer+madvise madvise never\n"},
+		{name: "bare idempotence", before: "defer\n"},
+		{name: "substring is not active target", before: "always defer [defer+madvise] madvise never\n", after: "always [defer] defer+madvise madvise never\n", wantWrites: 1},
+		{name: "supported but inactive target", before: initial, after: initial, wantWrites: 1, wantErr: "verification failed"},
+		{name: "active substring mismatch", before: initial, after: "always defer [defer+madvise] madvise never\n", wantWrites: 1, wantErr: "verification failed"},
+		{name: "bare substring mismatch", before: initial, after: "defer+madvise\n", wantWrites: 1, wantErr: "verification failed"},
+		{name: "empty read back", before: initial, wantWrites: 1, wantErr: "missing active THP setting"},
+		{name: "whitespace read back", before: initial, after: " \t\n", wantWrites: 1, wantErr: "missing active THP setting"},
+		{name: "missing selection", before: initial, after: "always defer defer+madvise madvise never\n", wantWrites: 1, wantErr: "missing active THP setting"},
+		{name: "multiple selections", before: initial, after: "[always] [defer] never\n", wantWrites: 1, wantErr: "invalid THP setting content"},
+		{name: "malformed brackets", before: initial, after: "always [defer never\n", wantWrites: 1, wantErr: "invalid THP setting content"},
+		{name: "nested brackets", before: initial, after: "always [[defer]] never\n", wantWrites: 1, wantErr: "invalid THP setting content"},
+		{name: "empty selection", before: initial, after: "always [] defer never\n", wantWrites: 1, wantErr: "invalid THP setting content"},
+		{name: "read back error", before: initial, remove: true, wantWrites: 1, wantErr: "read back THP setting file"},
+		{name: "write error", before: initial, writeErr: os.ErrPermission, wantWrites: 1, wantErr: "set THP setting failed"},
+		{name: "empty initial content", wantErr: "missing active THP setting"},
+		{name: "ambiguous initial selection", before: "[always] [defer] never\n", wantErr: "invalid THP setting content"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := createTempFile(t, tt.before)
+			defer os.Remove(path)
+			writes := 0
+			applyTHPModeAtPath = func(gotPath, value string) error {
+				writes++
+				require.Equal(t, path, gotPath)
+				require.Equal(t, "defer", value)
+				if tt.writeErr != nil {
+					return tt.writeErr
+				}
+				if tt.remove {
+					return os.Remove(path)
+				}
+				return os.WriteFile(path, []byte(tt.after), 0o644)
+			}
+
+			err := writeTHPSettingAtPath(path, "defer")
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tt.wantWrites, writes)
+		})
+	}
+}
+
+func TestSetTHPModeAtPathIfExistsReadBackMissing(t *testing.T) {
+	t.Parallel()
+
+	setMemTHPTestMu.Lock()
+	defer setMemTHPTestMu.Unlock()
+
+	oldApply := applyTHPModeAtPath
+	defer func() { applyTHPModeAtPath = oldApply }()
+	path := createTempFile(t, "always within_size advise [never] deny force\n")
+	defer os.Remove(path)
+	applyTHPModeAtPath = func(path, _ string) error {
+		return os.Remove(path)
+	}
+
+	err := setTHPModeAtPathIfExists(path, apiconfig.THPShmModeAdvise)
+	require.ErrorContains(t, err, "read back THP setting file")
+	require.ErrorIs(t, err, os.ErrNotExist, "only paths absent before applying may be skipped")
+}
+
+func TestSetTHPModeAtPathVerificationFailureRestoresMinFreeKbytes(t *testing.T) {
+	t.Parallel()
+
+	setMemTHPTestMu.Lock()
+	defer setMemTHPTestMu.Unlock()
+
+	oldEnabledPath, oldMinFreePath, oldApply := thpEnabledPath, minFreeKbytesPath, applyTHPModeAtPath
+	defer func() {
+		thpEnabledPath, minFreeKbytesPath, applyTHPModeAtPath = oldEnabledPath, oldMinFreePath, oldApply
+	}()
+	thpFile := createTempFile(t, "always madvise [never]\n")
+	minFreeFile := createTempFile(t, "12345\n")
+	defer os.Remove(thpFile)
+	defer os.Remove(minFreeFile)
+	thpEnabledPath, minFreeKbytesPath = thpFile, minFreeFile
+
+	for _, remove := range []bool{false, true} {
+		require.NoError(t, os.WriteFile(thpFile, []byte("always madvise [never]\n"), 0o644))
+		applyTHPModeAtPath = func(path, _ string) error {
+			if err := os.WriteFile(minFreeFile, []byte("54321\n"), 0o644); err != nil {
+				return err
+			}
+			if remove {
+				return os.Remove(path)
+			}
+			return nil // Leave the old selection active to simulate an ineffective write.
+		}
+
+		require.Error(t, setTHPModeAtPath(thpFile, apiconfig.THPModeMadvise))
+		content, err := os.ReadFile(minFreeFile)
+		require.NoError(t, err)
+		require.Equal(t, "12345\n", string(content))
+	}
 }
 
 func TestDecideTHPDecision(t *testing.T) {
